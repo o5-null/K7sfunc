@@ -1,5 +1,5 @@
 
-当前文档匹配的版本 **dev**  
+当前文档匹配的版本 **1.8.1**  
 _与 mpv-lazy 预捆绑的版本说明发布在[此处](https://github.com/hooke007/mpv_PlayKit/discussions/635)_
 
 # K7sfunc的Mac专用模块

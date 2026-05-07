@@ -1,5 +1,5 @@
 
-**当前文档对应的版本 dev **  
+**当前文档对应的版本 1.8.1 **  
 _与 mpv-lazy 预捆绑的版本说明发布在[此处](https://github.com/hooke007/mpv_PlayKit/wiki/3_K7sfunc)_
 
 # K7SFUNC
