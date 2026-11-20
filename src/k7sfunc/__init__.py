@@ -1,5 +1,7 @@
 
-__version__ = "1.8.1"
+# 本 fork（o5-null/K7sfunc）在 1.8.1 基础上加入 mod_playkit，属预览分支：
+# 版本号带 +pre 局部标识，安装时用源码树直接覆盖，不依赖 PyPI 包。
+__version__ = "1.9.0+pre.1"
 
 from ._internal import vs_t_dft, LooseVersion
 
@@ -10,8 +12,9 @@ from .mod_memc import *
 from .mod_dbdn import *
 from .mod_etc import *
 from .mod_mix import *
+from .mod_playkit import *
 
-from . import mod_helper, mod_fmt, mod_scale, mod_memc, mod_dbdn, mod_mix, mod_etc
+from . import mod_helper, mod_fmt, mod_scale, mod_memc, mod_dbdn, mod_mix, mod_etc, mod_playkit
 
 __all__ = (
 	[
@@ -26,4 +29,5 @@ __all__ = (
 	+ mod_dbdn.__all__
 	+ mod_mix.__all__
 	+ mod_etc.__all__
+	+ mod_playkit.__all__
 )
