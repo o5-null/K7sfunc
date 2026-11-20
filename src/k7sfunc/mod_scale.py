@@ -12,6 +12,9 @@ from ._internal import (
 	_validate_literal,
 	_validate_numeric,
 	_check_plugin,
+	_check_trt,
+	_trt_plugin_dir,
+	_trt_backend,
 	_check_script,
 )
 
@@ -101,12 +104,12 @@ def ARTCNN_NV(
 	_validate_bool(func_name, "st_eng", st_eng)
 	_validate_numeric(func_name, "ws_size", ws_size, min_val=0, int_only=True)
 
-	_check_plugin(func_name, "trt")
+	trt_ns = _check_trt(func_name)
 	_check_plugin(func_name, "akarin")
 
 	from ._external import vsmlrt
 
-	plg_dir = os.path.dirname(core.trt.Version()["path"]).decode()
+	plg_dir = _trt_plugin_dir(trt_ns)
 	mdl_fname = ["ArtCNN_R16F96", "ArtCNN_R8F64", "ArtCNN_R8F64_DS"][[6, 7, 8].index(model)]
 	mdl_pth = plg_dir + "/models/ArtCNN/" + mdl_fname + ".onnx"
 	if not os.path.exists(mdl_pth) :
@@ -125,7 +128,7 @@ def ARTCNN_NV(
 	cut0 = core.resize.Bilinear(clip=input, format=vs.YUV444PH)
 
 	cut0_y = core.std.ShufflePlanes(clips=cut0, planes=0, colorfamily=vs.GRAY)
-	cut1_y = vsmlrt.ArtCNN(clip=cut0_y, model=model, backend=vsmlrt.BackendV2.TRT(
+	cut1_y = vsmlrt.ArtCNN(clip=cut0_y, model=model, backend=_trt_backend(vsmlrt, trt_ns,
 		num_streams=gpu_t, force_fp16=True, output_format=1,
 		workspace=None if ws_size < 128 else (ws_size if st_eng else ws_size * 2),
 		use_cuda_graph=True, use_cublas=False, use_cudnn=False,
@@ -164,12 +167,12 @@ def CUGAN_NV(
 	_validate_bool(func_name, "st_eng", st_eng)
 	_validate_numeric(func_name, "ws_size", ws_size, min_val=0, int_only=True)
 
-	_check_plugin(func_name, "trt")
+	trt_ns = _check_trt(func_name)
 	_check_plugin(func_name, "akarin")
 
 	from ._external import vsmlrt
 
-	plg_dir = os.path.dirname(core.trt.Version()["path"]).decode()
+	plg_dir = _trt_plugin_dir(trt_ns)
 	mdl_fname = ["pro-no-denoise3x-up2x", "pro-conservative-up2x", "pro-denoise3x-up2x"][[-1, 0, 3].index(nr_lv)]
 	mdl_pth = plg_dir + "/models/cugan/" + mdl_fname + ".onnx"
 	if not os.path.exists(mdl_pth) :
@@ -186,7 +189,7 @@ def CUGAN_NV(
 		raise Exception("源分辨率不属于动态引擎支持的范围，已临时中止。")
 
 	cut1 = core.resize.Bilinear(clip=input, format=vs.RGBH, matrix_in_s="709")
-	cut2 = vsmlrt.CUGAN(clip=cut1, noise=nr_lv, scale=2, alpha=sharp_lv, version=2, backend=vsmlrt.BackendV2.TRT(
+	cut2 = vsmlrt.CUGAN(clip=cut1, noise=nr_lv, scale=2, alpha=sharp_lv, version=2, backend=_trt_backend(vsmlrt, trt_ns,
 		num_streams=gpu_t, force_fp16=True, output_format=1,
 		workspace=None if ws_size < 128 else (ws_size if st_eng else ws_size * 2),
 		use_cuda_graph=True, use_cublas=False, use_cudnn=False,

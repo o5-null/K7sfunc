@@ -13,6 +13,9 @@ from ._internal import (
 	_validate_numeric,
 	_validate_string_length,
 	_check_plugin,
+	_check_trt,
+	_trt_plugin_dir,
+	_trt_backend,
 	_check_script,
 )
 from .mod_helper import (
@@ -270,11 +273,11 @@ def UAI_NV_TRT(
 			raise vs.Error(f"模块 {func_name} 的子参数 res_max 的值无效")
 	_validate_numeric(func_name, "ws_size", ws_size, min_val=0, int_only=True)
 
-	_check_plugin(func_name, "trt")
+	trt_ns = _check_trt(func_name)
 
 	from ._external import vsmlrt
 
-	plg_dir = os.path.dirname(core.trt.Version()["path"]).decode()
+	plg_dir = _trt_plugin_dir(trt_ns)
 	mdl_pth_rel = plg_dir + "/models/" + model_pth
 	if not os.path.exists(mdl_pth_rel) and not os.path.exists(model_pth) :
 		raise vs.Error(f"模块 {func_name} 所请求的模型缺失")
@@ -300,7 +303,7 @@ def UAI_NV_TRT(
 	rgb_fmt = vs.RGBH if fp16_qnt else vs.RGBS
 	yuv_fmt = vs.YUV444PH if fp16_qnt else vs.YUV444PS
 
-	be_param = vsmlrt.BackendV2.TRT(
+	be_param = _trt_backend(vsmlrt, trt_ns,
 		builder_optimization_level=opt_lv, short_path=True, device_id=gpu,
 		num_streams=gpu_t, use_cuda_graph=nv1, use_cublas=nv2, use_cudnn=nv3,
 		int8=int8_qnt, fp16=fp16_qnt, tf32=False if fp16_qnt else True,

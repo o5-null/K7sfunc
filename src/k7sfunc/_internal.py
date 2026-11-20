@@ -228,6 +228,58 @@ def _check_plugin(
 		if not _plugin_cache[plugin_name] :
 			raise ModuleNotFoundError(f"模块 {func_name} 依赖错误：缺失插件，检查项目 {plugin_name}")
 
+def _check_trt(
+	func_name : str,
+) -> str :
+	"""返回可用的 TensorRT 命名空间。
+
+	官方 vs-mlrt 发的是 core.trt（nvinfer），playkit 的 tensorrt-rtx 补丁包
+	只带 core.trt_rtx（TensorRT-RTX），两者接口相近但后端对象不同。
+	"""
+	for plugin_name in ("trt", "trt_rtx") :
+		with _plugin_cache_lock :
+			if plugin_name not in _plugin_cache :
+				_plugin_cache[plugin_name] = hasattr(core, plugin_name)
+			available = _plugin_cache[plugin_name]
+		if available :
+			return plugin_name
+	raise ModuleNotFoundError(f"模块 {func_name} 依赖错误：缺失插件，检查项目 trt 或 trt_rtx")
+
+def _trt_plugin_dir(
+	trt_ns : str,
+) -> str :
+	"""插件自身所在目录，模型统一放在其下的 models/ 里。
+
+	API4 插件返回 str，旧版返回 bytes，这里统一成 str。
+	"""
+	plugin_path = getattr(core, trt_ns).Version()["path"]
+	if isinstance(plugin_path, bytes) :
+		plugin_path = plugin_path.decode()
+	return os.path.dirname(plugin_path)
+
+def _trt_backend(
+	vsmlrt : typing.Any,
+	trt_ns : str,
+	**kwargs,
+) -> typing.Any :
+	"""按可用命名空间构造 TensorRT 后端。
+
+	TRT_RTX 是另一套 builder：只认自己 dataclass 里的字段，
+	fp16 用 fp16 开关表达，输出精度由引擎自身决定。
+	"""
+	if trt_ns == "trt" :
+		return vsmlrt.BackendV2.TRT(**kwargs)
+	fields = getattr(vsmlrt.Backend.TRT_RTX, "__dataclass_fields__", {})
+	mapped = {key: value for key, value in kwargs.items() if key in fields}
+	if "force_fp16" in kwargs :
+		mapped["fp16"] = bool(kwargs["force_fp16"])
+	# TensorRT-RTX 的动态形状引擎会在 cuDNN graph 编译处失败（cugan 等网络实测），
+	# 统一退化成静态引擎：由 vsmlrt 按当前 clip 尺寸建引擎，代价是换分辨率要重建。
+	for key in ("min_shapes", "opt_shapes", "max_shapes") :
+		mapped.pop(key, None)
+	mapped["static_shape"] = True
+	return vsmlrt.BackendV2.TRT_RTX(**mapped)
+
 def _check_script(
 	func_name : str,
 	script_name : str,

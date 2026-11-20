@@ -34,6 +34,7 @@ from vapoursynth import core
 
 
 def get_plugins_path() -> str:
+    """插件目录：API4 的 Version()["path"] 是 str，旧版是 bytes。"""
     path = b""
 
     try:
@@ -71,10 +72,12 @@ def get_plugins_path() -> str:
         except AttributeError:
             pass
 
-    if path == b"":
+    if not path:
         raise RuntimeError("vsmlrt: cannot load any filters")
 
-    return os.path.dirname(path).decode()
+    if isinstance(path, bytes):
+        path = path.decode()
+    return os.path.dirname(path)
 
 
 plugins_path: str = get_plugins_path()
@@ -2241,7 +2244,9 @@ def tensorrt_rtx(
         builder_optimization_level=builder_optimization_level,
         max_aux_streams=max_aux_streams,
         short_path=short_path,
+        int8=False,
         bf16=False,
+        fp8=False,
         engine_folder=engine_folder,
         is_rtx=True,
         trt_version=trt_version,
@@ -2305,11 +2310,8 @@ def tensorrt_rtx(
 
     tactic_sources = []
 
-    if use_cudnn:
-        tactic_sources.append("+CUDNN")
-    else:
-        tactic_sources.append("-CUDNN")
-
+    # TRT-RTX 的 builder 只认 EDGE_MASK_CONVOLUTIONS / JIT_CONVOLUTIONS，
+    # 下发 CUDNN 会直接报 "Unknown tactic source: CUDNN"，这里只控制 edge mask 卷积。
     if use_edge_mask_convolutions:
         tactic_sources.append("+EDGE_MASK_CONVOLUTIONS")
     else:
@@ -2341,7 +2343,18 @@ def tensorrt_rtx(
 
     env = {"CUDA_MODULE_LOADING": "LAZY"}
     env.update(**custom_env)
-    subprocess.run(args, env=env, check=True, stdout=sys.stderr)
+    try:
+        subprocess.run(args, env=env, check=True, stdout=sys.stderr)
+    except subprocess.CalledProcessError:
+        # trtexec 会在构建后自带一次验证推理（--useCudaGraph 时无法用 --skipInference 关掉），
+        # 某些算子在 TensorRT-RTX 上验证期会失败（如 cuDNN graph 编译）；只要引擎已落盘就可继续用。
+        if os.access(engine_path, mode=os.R_OK) and os.path.getsize(engine_path) >= 1024:
+            print(
+                f"tensorrt_rtx: engine built but validation inference failed, using {engine_path}",
+                file=sys.stderr,
+            )
+            return engine_path
+        raise
 
     return engine_path
 

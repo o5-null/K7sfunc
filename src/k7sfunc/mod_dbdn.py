@@ -14,6 +14,9 @@ from ._internal import (
 	_validate_numeric,
 	_validate_string_length,
 	_check_plugin,
+	_check_trt,
+	_trt_plugin_dir,
+	_trt_backend,
 	_check_script,
 )
 from .mod_helper import LAYER_HIGH
@@ -54,12 +57,12 @@ def DPIR_TRT_HUB(
 	_validate_bool(func_name, "st_eng", st_eng)
 	_validate_numeric(func_name, "ws_size", ws_size, min_val=0, int_only=True)
 
-	_check_plugin(func_name, "trt")
+	trt_ns = _check_trt(func_name)
 	_check_plugin(func_name, "akarin")
 
 	from ._external import vsmlrt
 
-	plg_dir = os.path.dirname(core.trt.Version()["path"]).decode()
+	plg_dir = _trt_plugin_dir(trt_ns)
 	if work_type == "deblock" :
 		mdl_fname = ["drunet_deblocking_grayscale", "drunet_deblocking_color"][[2, 3].index(model)]
 	else :  # "降噪模式"
@@ -99,7 +102,7 @@ def DPIR_TRT_HUB(
 	else :
 		cut2 = core.resize.Bilinear(clip=cut0, format=vs.RGBH, matrix_in_s="709")
 
-	fin = vsmlrt.DPIR(clip=cut2, strength=nr_lv, model=model, backend=vsmlrt.BackendV2.TRT(
+	fin = vsmlrt.DPIR(clip=cut2, strength=nr_lv, model=model, backend=_trt_backend(vsmlrt, trt_ns,
 		num_streams=gpu_t, force_fp16=True, output_format=1,
 		workspace=None if ws_size < 128 else (ws_size if st_eng else ws_size * 2),
 		use_cuda_graph=True, use_cublas=False, use_cudnn=False,

@@ -14,6 +14,9 @@ from ._internal import (
 	_validate_literal,
 	_validate_numeric,
 	_check_plugin,
+	_check_trt,
+	_trt_plugin_dir,
+	_trt_backend,
 	_check_script,
 )
 from .mod_helper import (
@@ -164,10 +167,11 @@ def DRBA_HUB(
 	_validate_literal(func_name, "gpu", gpu, [0, 1, 2])
 	_validate_numeric(func_name, "gpu_t", gpu_t, min_val=1, int_only=True)
 
+	trt_ns = None
 	if backend_type == "dml" :
 		_check_plugin(func_name, "ort")
 	else :
-		_check_plugin(func_name, "trt")
+		trt_ns = _check_trt(func_name)
 	if sc_mode == 2 :
 		_check_plugin(func_name, "mv")
 	_check_plugin(func_name, "akarin")
@@ -184,7 +188,7 @@ def DRBA_HUB(
 		plg_dir = os.path.dirname(core.ort.Version()["path"]).decode()
 		model_half = True
 	else :
-		plg_dir = os.path.dirname(core.trt.Version()["path"]).decode()
+		plg_dir = _trt_plugin_dir(trt_ns)
 	mdl_pname = "drba/"
 	mdl_fname = ["distilDRBA_v1", "distilDRBA_v2_lite"][[1, 2].index(model)]
 	mdl_var_parts = []
@@ -322,7 +326,7 @@ def DRBA_NV(
 		max_shapes2 = [tile_size * x for x in shape_cfg["max2"]]
 
 		if model_ap :
-			return {"halfm": False, "backend": vsmlrt.BackendV2.TRT(
+			return {"halfm": False, "backend": _trt_backend(vsmlrt, trt_ns,
 				num_streams=gpu_t, int8=int8_qnt, fp16=True, output_format=1,
 				workspace=None if ws_size < 128 else ws_size,
 				use_cuda_graph=True, use_cublas=False, use_cudnn=False,
@@ -330,7 +334,7 @@ def DRBA_NV(
 				opt_shapes=None, max_shapes=None,
 				device_id=gpu, short_path=True)}
 		else :
-			return {"halfm": False, "backend": vsmlrt.BackendV2.TRT(
+			return {"halfm": False, "backend": _trt_backend(vsmlrt, trt_ns,
 				num_streams=gpu_t, int8=int8_qnt, fp16=True, output_format=1,
 				workspace=None if ws_size < 128 else (ws_size if st_eng else ws_size * 2),
 				use_cuda_graph=True, use_cublas=False, use_cudnn=False,
@@ -641,7 +645,7 @@ def RIFE_NV(
 	_validate_numeric(func_name, "gpu_t", gpu_t, min_val=1, int_only=True)
 	_validate_numeric(func_name, "ws_size", ws_size, min_val=0, int_only=True)
 
-	_check_plugin(func_name, "trt")
+	trt_ns = _check_trt(func_name)
 	if sc_mode == 2 :
 		_check_plugin(func_name, "mv")
 	_check_plugin(func_name, "akarin")
@@ -660,7 +664,7 @@ def RIFE_NV(
 		ext_proc = False
 		s_tta = False
 
-	plg_dir = os.path.dirname(core.trt.Version()["path"]).decode()
+	plg_dir = _trt_plugin_dir(trt_ns)
 	mdl_pname = "rife/" if ext_proc else "rife_v2/"
 	if model in [4251, 426, 4262] : ## https://github.com/AmusementClub/vs-mlrt/blob/2adfbab790eebe51c62c886400b0662570dfe3e9/scripts/vsmlrt.py#L1031-L1032
 		s_tta = False
@@ -719,7 +723,7 @@ def RIFE_NV(
 	if ext_proc :
 		if w_tmp + h_tmp > 0 :
 			cut1 = core.std.AddBorders(clip=cut1, right=w_tmp, bottom=h_tmp)
-		fin = vsmlrt.RIFE(clip=cut1, multi=fractions.Fraction(fps_num, fps_den), scale=scale_model, model=model, ensemble=s_tta, _implementation=1, video_player=True, backend=vsmlrt.BackendV2.TRT(
+		fin = vsmlrt.RIFE(clip=cut1, multi=fractions.Fraction(fps_num, fps_den), scale=scale_model, model=model, ensemble=s_tta, _implementation=1, video_player=True, backend=_trt_backend(vsmlrt, trt_ns,
 			num_streams=gpu_t, int8=int8_qnt, fp16=True, output_format=1,
 			workspace=None if ws_size < 128 else (ws_size if st_eng else ws_size * 2),
 			use_cuda_graph=True, use_cublas=False, use_cudnn=False,
@@ -730,7 +734,7 @@ def RIFE_NV(
 		if w_tmp + h_tmp > 0 :
 			fin = core.std.Crop(clip=fin, right=w_tmp, bottom=h_tmp)
 	else :
-		fin = vsmlrt.RIFE(clip=cut1, multi=fractions.Fraction(fps_num, fps_den), scale=scale_model, model=model, ensemble=s_tta, _implementation=2, video_player=True, backend=vsmlrt.BackendV2.TRT(
+		fin = vsmlrt.RIFE(clip=cut1, multi=fractions.Fraction(fps_num, fps_den), scale=scale_model, model=model, ensemble=s_tta, _implementation=2, video_player=True, backend=_trt_backend(vsmlrt, trt_ns,
 			num_streams=gpu_t, int8=int8_qnt, fp16=True, output_format=1,
 			workspace=None if ws_size < 128 else ws_size,
 			use_cuda_graph=True, use_cublas=False, use_cudnn=False,
