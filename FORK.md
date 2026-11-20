@@ -12,12 +12,14 @@ mpv-playkit 不再从 PyPI 装 `k7sfunc`，而是按 commit 钉住本 fork 的�
 | 文件 | 性质 |
 | --- | --- |
 | `src/k7sfunc/mod_playkit.py` | 新增：预设层，把上游算子组合成开箱即用的滤镜链 |
+| `src/k7sfunc/mod_memc.py` | 仅追加：新增帧生成补帧 `DLSSG_NV` / `XESSFG_NV` / `VFG_NV` / `FSR4` 与公用 helper `FRAMEGEN_HUB`（上游函数一行未改） |
 | `src/k7sfunc/__init__.py` | 一行导出 + 版本号改为 `1.9.0+pre.1` |
 | `mpv/portable_config/scripts/k7f_playkit.lua` | 新增：mpv 前端，按配置生成临时 vpy 并挂到 `@PLAYKIT` 滤镜标签 |
 | `mpv/portable_config/script-opts/k7f_playkit.conf` | 新增：前端配置 |
+| `mpv/portable_config/vs/MEMC_*.vpy` | 新增：vs-framegen 的四个补帧脚本（DLSS-G / XeSS-FG / VFG / FSR4） |
 | `FORK.md` | 新增：本文件 |
 
-**不改上游已有模块**，上游更新时合并冲突面只有 `__init__.py` 三行。
+除 `mod_memc.py` 的纯追加外**不改上游已有模块**，上游更新时合并冲突面只有 `__init__.py` 三行。
 
 ## PLAYKIT_* 接口
 
@@ -59,13 +61,24 @@ clip.set_output()
 
 3. 只想要原子算子：继续用上游函数（`ACNET_STD`、`RIFE_NV` 等），本 fork 未改动它们的实现。
 
+## 帧生成补帧（vs-framegen）
+
+`mod_memc.py` 追加了四个引擎的封装，宿主源码来自 [o5-null/vs-framegen](https://github.com/o5-null/vs-framegen)：
+`DLSSG_NV`(vdlssg) / `XESSFG_NV`(vxessfg) / `VFG_NV`(vvfg) / `FSR4`(vfsr4)。
+它们都接受 `RGBS` 或 YUV 输入（内部按 709 转换），输出回到源格式与真实输出帧率（`fps_in * multi`）。
+
+- 倍率：`DLSSG_NV` / `VFG_NV` 为 2–6，`XESSFG_NV` 为 2–4，`FSR4` 固定 2
+- 单进程只支持一种帧尺寸；同一进程只能初始化一次 NGX（`vdlssg` 与 `vxessfg` 不能同时用）
+- 现成的前端脚本在 `mpv/portable_config/vs/MEMC_*.vpy`，插件与引擎包不在本仓库，
+  由播放器的拓展包提供（`<包根>\vs-plugins\`，引擎包在 `vs-plugins\bin\<引擎>\`）
+
 模型与 GPU 组件不在本仓库：仍按上游规则从
 [hooke007/dotfiles 的 mpv_addones](https://github.com/hooke007/dotfiles/releases/tag/mpv_addones)
 取，放进播放器根目录的 `vs-plugins/`。
 
 ## 版本与同步
 
-- 版本号 `1.9.0+pre.1`：基线是上游 1.8.1，`+pre.N` 表示本 fork 的预览迭代号。
+- 版本号 `1.9.0+pre.4`：基线是上游 1.8.1，`+pre.N` 表示本 fork 的预览迭代号。
 - 同步上游：`git remote add upstream https://github.com/LumeCraft-Labs/K7sfunc.git`，
   合并后把 `+pre.N` 递增；因为只新增文件，冲突通常只出现在 `__init__.py`。
 - 本包按源码树安装（不走 PyPI），所以 `src/k7sfunc/` 必须是可导入的完整包，

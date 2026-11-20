@@ -495,6 +495,90 @@ RIFE_NV(input=?, model=46, int8_qnt=False, turbo=2, fps_in=23.976, fps_num=2, fp
 
 ***
 
+### DLSSG_NV
+
+> 所需依赖：  
+> plugins: [vs-framegen](https://github.com/o5-null/vs-framegen)（`vdlssg.dll` + `dlss45` 引擎包）
+
+```python
+DLSSG_NV(input=?, multi=2, scene_threshold=0.25, camera=0, fps_in=23.976, gpu=None, proxy_dir=None, log=False)
+```
+
+用 NVIDIA DLSS Frame Generation 生成中间帧，补到固定整数倍（vs-framegen 的宿主封装）。
+
+||||
+|:---|:---|:---|
+| <kbd>multi</kbd> | `2`\|`3`\|`4`\|`5`\|`6` | 帧率倍数，每对相邻帧插 `multi-1` 张 |
+| <kbd>scene_threshold</kbd> | 浮点 | 切镜阈值（三平面 8 采样平均绝对差， 0~1 ）， `0` 为禁用 |
+| <kbd>camera</kbd> | `0`\|`1`\|`2`\|`3` | 相机类型， `0` 为默认 |
+| <kbd>fps_in</kbd> | 浮点 | 指定输入源的帧率，输出帧率为 `fps_in*multi` |
+| <kbd>gpu</kbd> | 整数\|`None` | 指定 DXGI 适配器序号， `None` 跟随 sm86 代理选中的显卡 |
+| <kbd>proxy_dir</kbd> | 字符串\|`None` | 指定引擎包目录， `None` 用插件默认（ DLL 同级的 `dlss45` ） |
+| <kbd>log</kbd> | `True`\|`False` | 是否每帧向 stderr 打印耗时 |
+
+> [!NOTE]
+> 单进程只支持一种帧尺寸；4K 上倍率取 `2` ，1080p 才建议 `4` 以上。插件只接受 `RGBS` ，本模块已在内部按 709 转换。
+> 同一进程只能初始化一次 NGX ，因此不能与 [XESSFG_NV](#xessfg_nv) 同时使用。
+
+***
+
+### XESSFG_NV
+
+> 所需依赖：  
+> plugins: [vs-framegen](https://github.com/o5-null/vs-framegen)（`vxessfg.dll` + `xessfg` 引擎包）
+
+```python
+XESSFG_NV(input=?, multi=2, scene_threshold=0.25, camera=0, fps_in=23.976, gpu=None, proxy_dir=None, log=False)
+```
+
+用 Intel XeSS-FG 生成中间帧，补到固定整数倍。参数含义同 [DLSSG_NV](#dlssg_nv)，区别只有倍率上限（<kbd>camera</kbd> 对本引擎无效）。
+
+||||
+|:---|:---|:---|
+| <kbd>multi</kbd> | `2`\|`3`\|`4` | 帧率倍数（引擎上限为 4 ） |
+
+> [!NOTE]
+> 与 [DLSSG_NV](#dlssg_nv) 同属 NGX 系，**不能在同一进程里一起加载**。
+
+***
+
+### VFG_NV
+
+> 所需依赖：  
+> plugins: [vs-framegen](https://github.com/o5-null/vs-framegen)（`vvfg.dll` + `vfg` 引擎包）
+
+```python
+VFG_NV(input=?, multi=2, scene_threshold=0.25, camera=0, fps_in=23.976, gpu=None, proxy_dir=None, log=False)
+```
+
+用 NVIDIA Video Frame Generation 生成中间帧，补到固定整数倍。参数含义同 [DLSSG_NV](#dlssg_nv)，区别只有倍率上限与显存代价（<kbd>camera</kbd> 对本引擎无效）。
+
+> [!NOTE]
+> 每个中间帧要一条独立 CUDA context ，1080p 约 1.4 GB 显存且首次建 lane 需 0.5~0.7 秒；6x 在 10 GB 卡上可行，4K 不可行。
+> 引擎包（NVIDIA Video Effects SDK 运行时）不在公开包里，需自备。
+
+***
+
+### FSR4
+
+> 所需依赖：  
+> plugins: [vs-framegen](https://github.com/o5-null/vs-framegen)（`vfsr4.dll` + `fsr4` 引擎包）
+
+```python
+FSR4(input=?, multi=2, scene_threshold=0.25, camera=0, fps_in=23.976, gpu=None, proxy_dir=None, log=False)
+```
+
+用 AMD FidelityFX FSR 4 帧生成补帧，**固定 2 倍**。
+
+||||
+|:---|:---|:---|
+| <kbd>camera</kbd> | 整数 | 按该速度（像素/帧）在运动矢量上叠加"相机运动" ， `0` 为禁用 |
+
+> [!NOTE]
+> 走 D3D12 后备缓冲 + Vulkan（vkd3d）共享纹理，引擎包缺失时报 `bin\fsr4 not found`；速度与画质在 sm_86 上都不如同门的 DLSS-G。
+
+***
+
 ### SVP_LQ
 
 > 所需依赖：[SVPflow1](https://github.com/hooke007/mpv_PlayKit/discussions/114) + [SVPflow2](https://github.com/hooke007/mpv_PlayKit/discussions/114)
