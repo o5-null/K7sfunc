@@ -307,6 +307,9 @@ def DRBA_NV(
 
 	from ._external import vsmlrt
 
+	# backend_param 闭包要用 trt_ns；这里先解析一次（DRBA_HUB 里也会再取，命中缓存不影响）
+	trt_ns = _check_trt(func_name)
+
 	w_in, h_in = input.width, input.height
 	size_in = w_in * h_in
 	st_eng = True if turbo else False

@@ -2163,6 +2163,92 @@ def migraphx_driver(
     return mxr_path
 
 
+def _onnx_tensor_types(model) -> typing.Dict[str, int]:
+    """推断并收集图上所有张量的 elem_type（拿不到中间张量类型时退化为局部表）。"""
+    try:
+        from onnx.shape_inference import infer_shapes
+        model = infer_shapes(model)
+    except Exception:
+        # 形状推导失败就退化为原始图，最多是拿不到中间张量类型
+        pass
+
+    tensor_types = {}
+
+    for value_info in list(model.graph.value_info) + list(model.graph.input) + list(model.graph.output):
+        if value_info.type.tensor_type.elem_type:
+            tensor_types[value_info.name] = value_info.type.tensor_type.elem_type
+
+    for initializer in model.graph.initializer:
+        tensor_types[initializer.name] = initializer.data_type
+
+    return tensor_types
+
+
+def fp16_source(model) -> typing.Tuple[typing.Any, typing.List[str]]:
+    """为 fp16 转换预处理原始模型，返回 (模型, node_block_list)。
+
+    1. 删掉 no-op Cast（输入 elem_type 等于 to）。导出图里常见的 `Cast(x, to=float32)`
+       本身无作用，但转换后输入变 half，就成了 `Cast(half -> float32)`，即"float 逃逸"；
+       TRT-RTX 解析 Float/Half 混用的 elementwise 时直接报
+       "ElementWiseOperation ... must have same input types"（DRBA 挂在这里）。
+       删掉 no-op Cast 不改变任何张量类型，一次推论即可完成。
+    2. 把「输入为整型」的 Cast 排除出转换。onnxconverter 会把它们改成 int -> half，
+       而 TRT-RTX 仍按 Float 处理其输出（RIFE 的 /Mul 挂在这里）；排除后
+       onnxconverter 会在与 half 张量相接处自动插入 Cast。
+       典型来源是 RIFE / DRBA 里由 Shape-Gather-Sub 推出的形状算术。
+    """
+    from onnx import TensorProto
+
+    int_types = (
+        TensorProto.INT64,
+        TensorProto.INT32,
+        TensorProto.INT16,
+        TensorProto.INT8,
+        TensorProto.UINT8,
+        TensorProto.BOOL,
+    )
+
+    tensor_types = _onnx_tensor_types(model)
+
+    # 去掉 no-op Cast，并把引用改到它的输入张量上
+    rename = {}
+    kept = []
+    for node in model.graph.node:
+        if node.op_type == "Cast" and len(node.input) == 1:
+            to = next((attr.i for attr in node.attribute if attr.name == "to"), None)
+            if to is not None and tensor_types.get(node.input[0]) == to:
+                rename[node.output[0]] = node.input[0]
+                continue
+        kept.append(node)
+
+    if rename:
+        def resolve(name):
+            seen = set()
+            while name in rename and name not in seen:
+                seen.add(name)
+                name = rename[name]
+            return name
+
+        for node in kept:
+            for i, name in enumerate(node.input):
+                if name in rename:
+                    node.input[i] = resolve(name)
+        for output in model.graph.output:
+            if output.name in rename:
+                output.name = resolve(output.name)
+
+        del model.graph.node[:]
+        model.graph.node.extend(kept)
+
+    node_block_list = [
+        node.name
+        for node in model.graph.node
+        if node.op_type == "Cast" and tensor_types.get(node.input[0]) in int_types
+    ]
+
+    return model, node_block_list
+
+
 def tensorrt_rtx(
     network_path: str,
     channels: int,
@@ -2203,15 +2289,21 @@ def tensorrt_rtx(
             os.makedirs(engine_folder, exist_ok=True)
             dirname = engine_folder
 
-        fp16_network_path = f"{os.path.join(dirname, basename)}_{checksum}_fp16{'_io' if fp16_io else ''}.onnx"
+        fp16_network_path = f"{os.path.join(dirname, basename)}_{checksum}_fp16{'_io' if fp16_io else ''}_castfix.onnx"
         if not (os.access(fp16_network_path, mode=os.R_OK) and os.path.getsize(fp16_network_path) >= 1024):
             import onnx
             model = onnx.load(network_path)
             try:
                 from onnxconverter_common.float16 import convert_float_to_float16
+                # 先规范化原图（去 no-op Cast）并拿到要排除的 int Cast，见 fp16_source
+                model, node_block_list = fp16_source(model)
                 with warnings.catch_warnings():
                     warnings.simplefilter("ignore")
-                    model = convert_float_to_float16(model, keep_io_types=not fp16_io)
+                    model = convert_float_to_float16(
+                        model,
+                        keep_io_types=not fp16_io,
+                        node_block_list=node_block_list,
+                    )
             except Exception:
                 import logging
                 from modelopt.onnx.autocast import convert_to_f16, configure_logging
