@@ -7,13 +7,21 @@
 mpv-playkit 不再从 PyPI 装 `k7sfunc`，而是按 commit 钉住本 fork 的源码树直接装进包里，
 所以这里的改动会原样出现在播放器的 `Lib/site-packages/k7sfunc/` 下。
 
+## 文档
+
+- 本仓库 wiki：[3_K7sfunc](https://github.com/o5-null/K7sfunc/wiki/3_K7sfunc)（fork 增量与四个帧生成模块）、
+  [4_FrameGen](https://github.com/o5-null/K7sfunc/wiki/4_FrameGen)（部署与参数）、
+  [4_FrameGen_基准与FAQ](https://github.com/o5-null/K7sfunc/wiki/4_FrameGen_%E5%9F%BA%E5%87%86%E4%B8%8EFAQ)、
+  [5_许可与第三方](https://github.com/o5-null/K7sfunc/wiki/5_%E8%AE%B8%E5%8F%AF%E4%B8%8E%E7%AC%AC%E4%B8%89%E6%96%B9)
+- 模块级参数表：`doc/Windows.md`、`doc/MacOS.md`（沿用上游格式）
+
 ## 相对上游的改动
 
 | 文件 | 性质 |
 | --- | --- |
 | `src/k7sfunc/mod_playkit.py` | 新增：预设层，把上游算子组合成开箱即用的滤镜链 |
 | `src/k7sfunc/mod_memc.py` | 仅追加：新增帧生成补帧 `DLSSG_NV` / `XESSFG_NV` / `VFG_NV` / `FSR4` 与公用 helper `FRAMEGEN_HUB`（上游函数一行未改） |
-| `src/k7sfunc/__init__.py` | 一行导出 + 版本号改为 `1.9.0+pre.1` |
+| `src/k7sfunc/__init__.py` | 一行导出 + 版本号改为 `1.9.0+pre.4` |
 | `mpv/portable_config/scripts/k7f_playkit.lua` | 新增：mpv 前端，按配置生成临时 vpy 并挂到 `@PLAYKIT` 滤镜标签 |
 | `mpv/portable_config/script-opts/k7f_playkit.conf` | 新增：前端配置 |
 | `mpv/portable_config/vs/MEMC_*.vpy` | 新增：vs-framegen 的四个补帧脚本（DLSS-G / XeSS-FG / VFG / FSR4） |
