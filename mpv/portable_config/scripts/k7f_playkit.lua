@@ -18,6 +18,8 @@ k7f_playkit.lua —— PlayKit 预设前端（本 fork 新增）
 
 local mp = require("mp")
 local msg = require("mp.msg")
+-- 注意：mpv 不再把子模块挂到 mp 表上，必须显式 require 后才能用 mp.options
+local options = require("mp.options")
 
 local opt = {
 	cache_dir = "~~/",        -- 生成的 vpy 存放目录
@@ -43,7 +45,7 @@ local opt_number = {
 	gpu_t = true,
 }
 
-mp.options.read_options(opt, "k7f_playkit", function(changed)
+options.read_options(opt, "k7f_playkit", function(changed)
 	for key in pairs(changed) do
 		if opt_number[key] then
 			opt[key] = tonumber(opt[key]) or opt[key]

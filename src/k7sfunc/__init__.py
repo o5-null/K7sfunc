@@ -1,7 +1,7 @@
 
 # 本 fork（o5-null/K7sfunc）在 1.8.1 基础上加入 mod_playkit，属预览分支：
 # 版本号带 +pre 局部标识，安装时用源码树直接覆盖，不依赖 PyPI 包。
-__version__ = "1.9.0+pre.2"
+__version__ = "1.9.0+pre.3"
 
 from ._internal import vs_t_dft, LooseVersion
 

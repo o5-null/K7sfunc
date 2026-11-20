@@ -41,6 +41,11 @@ local function parent_dir(path)
     return path:match("^(.*)\\[^\\]*$")
 end
 
+-- TOML 基本字符串里的反斜杠要转义（vsscript.dll 侧逐字符反转义，单反斜杠会被吞掉）
+local function toml_escape(path)
+    return (path:gsub("\\", "\\\\"))
+end
+
 local function exists(path)
     return utils.file_info(path) ~= nil
 end
@@ -71,27 +76,57 @@ local function write_lines(path, lines)
     return true
 end
 
--- 解析一行 TOML 的键（形如 "c:\\dir\\vsscript.dll" = [...]）
+-- 解析一行 TOML 的键（形如 "c:\\dir\\vsscript.dll" = [...]，返回值仍是转义形态）
 local function line_key(line)
     return line:match('^%s*"([^"]+)"')
 end
 
--- 定位包根：
---   便携布局下 ~~/ 就是 <root>\portable_config，需要回退一层；
---   个别情况下 ~~/ 已经指向包根，则直接用。
+-- 反转义：把 TOML 里的双反斜杠还原成单反斜杠
+local function toml_unescape(text)
+    return (text:gsub("\\\\", "\\"))
+end
+
+-- 从 dir 开始逐层上溯，找同时有 python.exe 的那一层（最多 depth 层）
+local function find_root_upwards(dir, depth)
+    local current = dir
+    for _ = 1, depth do
+        if not current or current == "" then
+            return nil
+        end
+        if exists(current .. "\\python.exe") then
+            return current
+        end
+        current = parent_dir(current)
+    end
+    return nil
+end
+
+-- 定位包根，顺序：
+--   1. script-opts 显式指定（k7f_vs-root，冒烟测试与特殊部署用）；
+--   2. 脚本自身位置（<root>\portable_config\scripts\k7f_vs.lua 上溯两层）；
+--   3. 退一步看 ~~/（便携布局下 = <root>\portable_config）。
+-- 注意 --no-config 时 ~~/ 为空、--script 直挂文件时 get_script_directory() 为 nil，
+-- 所以第 2、3 条都可能落空，第 1 条是兜底。
 local function resolve_root()
+    local opt_root = mp.get_opt("root")
+    if opt_root and opt_root ~= "" then
+        local found = find_root_upwards(to_windows_path(opt_root), 2)
+        if found then
+            return found
+        end
+    end
+    local script_dir = mp.get_script_directory and mp.get_script_directory()
+    if script_dir and script_dir ~= "" then
+        local root = find_root_upwards(to_windows_path(script_dir), 4)
+        if root then
+            return root
+        end
+    end
     local cfg = to_windows_path(mp.command_native({"expand-path", "~~/"}) or "")
     if cfg == "" then
         return nil
     end
-    if exists(cfg .. "\\python.exe") then
-        return cfg
-    end
-    local parent = parent_dir(cfg)
-    if parent and exists(parent .. "\\python.exe") then
-        return parent
-    end
-    return nil
+    return find_root_upwards(cfg, 2)
 end
 
 local function find_vsscript(root)
@@ -133,13 +168,14 @@ local function bootstrap()
     local mtime = string.format("%d", math.floor(info.mtime))
 
     local key = string.lower(vsscript)
-    local wanted = string.format('"%s" = ["%s","%s","%s"]', key, python_exe, python_dll, mtime)
+    local escaped_key = toml_escape(key)
+    local wanted = string.format('"%s" = ["%s","%s","%s"]',
+        escaped_key, toml_escape(python_exe), toml_escape(python_dll), mtime)
 
     -- 读旧配置：同键同 mtime 已就绪就什么都不做
     local lines = read_lines(runtime_cfg_path)
     for _, line in ipairs(lines) do
-        local existing_key = line_key(line)
-        if existing_key == key and line:find(mtime, 1, true) then
+        if line_key(line) == escaped_key and line:find(mtime, 1, true) then
             msg.verbose("k7f_vs: 运行时配置已就绪")
             return
         end
@@ -149,8 +185,8 @@ local function bootstrap()
     local kept = {}
     for _, line in ipairs(lines) do
         local existing_key = line_key(line)
-        if existing_key ~= key then
-            if not existing_key or exists(existing_key) then
+        if existing_key ~= escaped_key then
+            if not existing_key or exists(toml_unescape(existing_key)) then
                 kept[#kept + 1] = line
             end
         end
@@ -166,4 +202,5 @@ local function bootstrap()
     end
 end
 
-mp.add_timeout(0, bootstrap)
+-- 脚本在文件加载之前完成，所以这里同步执行，保证 VapourSynth 初始化时配置已就位
+bootstrap()
