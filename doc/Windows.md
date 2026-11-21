@@ -582,14 +582,20 @@ FSR4(input=?, multi=2, scene_threshold=0.25, camera=0, fps_in=23.976, gpu=None, 
 ### RIFE_AJI
 
 > 所需依赖：  
-> plugins: [vsaji](https://github.com/o5-null/vsaji) 构建的 `rife_aji.dll` + `aji` 运行时包（从引擎源码构建，扁平放在同一层）
+> plugins: `rife_aji.dll`（[vsaji](https://github.com/o5-null/vsaji) 构建，放进 `Lib\site-packages\vapoursynth\plugins\`）  
+> vs-plugins: aji 运行时包（`<包根>\vs-plugins\aji\`，从引擎源码构建，扁平放在同一层）
 
 ```python
 RIFE_AJI(input=?, model="4.14", ensemble=False, fps_in=23.976, fps_num=2, fps_den=1, sc_mode=1, gpu=0)
 ```
 
 用 AnimeJaNai 的 libaji 原生 RIFE 引擎补帧至固定整数倍（插件在运行期按插件自身路径 dlopen `aji.dll`，不依赖环境变量）。
-依赖目录：`<包根>\vs-plugins\aji\`（`rife_aji.dll`、`aji.dll`、`aji_trt.dll`、`cudart64_*.dll`、`aji-runtime.json`、`trt\nvinfer_11.dll`、`conf\`、`rife\*.onnx`；`trt\` 内还要有一份 `cudart64_*.dll`）。
+依赖按 K7 的规则分两处放，**不能合并**：
+
+- `Lib\site-packages\vapoursynth\plugins\rife_aji.dll`：VS 插件，进程启动时自动加载；
+- `<包根>\vs-plugins\aji\`：aji 运行时（`aji.dll`、`aji_trt.dll`、`cudart64_*.dll`、`aji-runtime.json`、`trt\nvinfer_11.dll`、`conf\`、`rife\*.onnx`；`trt\` 内还要有一份 `cudart64_*.dll`）。
+
+插件按自身路径向上找 `aji\`，所以把整个 `dist\aji\` 放进 `plugins\aji\` 也能用；换版本调试可用环境变量 `AJI_PLUGIN` / `AJI_DIR` 覆盖。
 输入只收 4:2:0 的 8bit/10bit，输出帧数为 `(源帧数-1) * 倍数 + 1`。
 
 ||||

@@ -24,7 +24,7 @@ from ._internal import (
 )
 
 from .mod_scale import ACNET_STD, ARTCNN_NV, CUGAN_NV, EDI_US_STD, NGU_HQ
-from .mod_memc import RIFE_NV, RIFE_DML
+from .mod_memc import RIFE_AJI, RIFE_DML, RIFE_NV
 from .mod_dbdn import NLM_STD
 from .mod_etc import DEBAND_STD
 
@@ -61,7 +61,8 @@ PLAYKIT_PRESETS = (
 
 # 从左到右尝试，第一项可用即停止；none 表示直接缩放
 PLAYKIT_UPSCALE_ORDER = ("artcnn", "acnet", "cugan", "edi", "ngu", "none")
-PLAYKIT_MEMC_ORDER = ("rife_nv", "rife_dml", "none")
+# aji 只支持整数倍率，倍率不整除时它自己会报错，降级链会继续往下走
+PLAYKIT_MEMC_ORDER = ("rife_nv", "aji", "rife_dml", "none")
 
 ##################################################
 ## 日志
@@ -157,6 +158,13 @@ def _playkit_memc_engine(
 	if engine == "rife_nv" :
 		return RIFE_NV(input, model=46, fps_in=fps_in, fps_num=fps_num, fps_den=fps_den,
 						gpu=gpu, gpu_t=gpu_t)
+	if engine == "aji" :
+		## aji 的 factor 只有整数：fps_num/fps_den 必须整除，否则直接降级给下一个引擎
+		if fps_num % fps_den != 0 :
+			raise ValueError(f"aji 只支持整数倍率，{fps_in:.3f} -> {fps_out:.3f} fps 是 {fps_num}/{fps_den}")
+		## 模型跟随 vsaji 发行包（component-rife 3.12.5 里的 4.14），只支持整数倍
+		return RIFE_AJI(input, model="4.14", fps_in=fps_in,
+						fps_num=fps_num // fps_den, fps_den=1, gpu=gpu)
 	if engine == "rife_dml" :
 		return RIFE_DML(input, model=46, fps_in=fps_in, fps_num=fps_num, fps_den=fps_den,
 						gpu=gpu, gpu_t=gpu_t)

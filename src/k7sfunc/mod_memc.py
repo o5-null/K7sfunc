@@ -1092,20 +1092,89 @@ def FSR4(
 ## RIFE补帧 AnimeJaNai (libaji)
 ##################################################
 
-def _aji_plugin_dir() -> str :
-	"""rife_aji 插件所在目录，aji 运行时按 <该目录>/aji 找。
+def _aji_pack_root() -> str :
+	"""播放器包根：<包根>\\Lib\\site-packages\\k7sfunc\\mod_memc.py 往上三层。
 
-	与 _trt_plugin_dir 同一思路：插件位置由插件自己报告，不猜播放器目录结构。
+	本包按源码树装进播放器，插件目录与 vs-plugins 都相对包根固定，可以据此
+	定位资源；k7sfunc 从 PyPI 装到别处时这个路径不存在，调用方会继续降级。
+	"""
+	return os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+										os.pardir, os.pardir, os.pardir))
+
+def _aji_load_plugin() -> None :
+	"""兜底加载 rife_aji.dll（正常情况由 VapourSynth 自动扫描插件目录）。
+
+	按 K7 的依赖规范，插件走 `Lib\\site-packages\\vapoursynth\\plugins\\`，进程
+	启动时自动 LoadPlugin；这里只是为"手动解压到 vs-plugins"与 PLAYKIT 预设
+	（纯 Python，没有 vpy 脚本层可写 LoadPlugin）留一条路。环境变量 AJI_PLUGIN
+	可指定具体 DLL，便于换版本调试。
+	"""
+	if hasattr(core, "rife_aji") :
+		return
+
+	root = _aji_pack_root()
+	cands = []
+	if os.environ.get("AJI_PLUGIN") :
+		cands.append(os.environ["AJI_PLUGIN"])
+	cands += [
+		## 非规范布局：插件与运行时都解压在 vs-plugins 下
+		os.path.join(root, "vs-plugins", "rife_aji.dll"),
+		os.path.join(root, "vs-plugins", "aji", "rife_aji.dll"),
+	]
+	for path in cands :
+		if not os.path.isfile(path) :
+			continue
+		try :
+			core.std.LoadPlugin(os.path.abspath(path))
+		except Exception :
+			continue
+		if hasattr(core, "rife_aji") :
+			return
+
+def _aji_version_paths() -> tuple[str, str] :
+	"""插件自报的 (插件所在目录, 它找到的 aji 运行时目录)，拿不到时给空串。
+
+	vsaji 的 Version() 一次返回 `path`（本 DLL 所在目录）与 `aji`（按"同级 aji.dll"
+	或"下级 aji\\"探测到的运行时目录），所以优先信任插件自己的判断。
+	注意：插件把 Version 注册成无返回签名，VapourSynth 会顺带打印一行
+	`Version: no return value(s) named ...`，属于上游噪声，不影响取值。
 	"""
 	try :
-		plugin_path = core.rife_aji.Version()["path"]
+		info = core.rife_aji.Version()
 	except Exception :
-		plugin_path = None
-	if not plugin_path :
-		return ""
-	if isinstance(plugin_path, bytes) :
-		plugin_path = plugin_path.decode()
-	return os.path.dirname(plugin_path)
+		return "", ""
+	def _text(key : str) -> str :
+		value = info.get(key) if hasattr(info, "get") else ""
+		if isinstance(value, bytes) :
+			value = value.decode()
+		return value or ""
+	return _text("path"), _text("aji")
+
+def _aji_runtime_dir() -> str :
+	"""aji 运行时目录（aji.dll / conf / rife 所在的那一层），找不到返回空串。
+
+	运行时不是 VS 插件，不进 `vapoursynth\\plugins\\`，按规范放 `<包根>\\vs-plugins\\aji\\`；
+	插件在运行期按自身路径 dlopen `aji.dll`，所以这里按优先级列出几种合法布局：
+
+	1. `AJI_DIR` 环境变量（换版本调试）；
+	2. 插件自报的 `aji` 目录（同级 aji.dll，或下级 aji\\）；
+	3. 插件同级的 `aji\\`、插件上级的 `aji\\`（插件自报为空时兜底）；
+	4. `<包根>\\vs-plugins\\aji`（本包拓展包的标准布局）。
+	"""
+	plugin_dir, reported = _aji_version_paths()
+	cands = []
+	if os.environ.get("AJI_DIR") :
+		cands.append(os.environ["AJI_DIR"])
+	if reported :
+		cands.append(reported)
+	if plugin_dir :
+		cands.append(os.path.join(plugin_dir, "aji"))
+		cands.append(os.path.join(os.path.dirname(plugin_dir), "aji"))
+	cands.append(os.path.join(_aji_pack_root(), "vs-plugins", "aji"))
+	for path in cands :
+		if os.path.isdir(path) :
+			return path
+	return ""
 
 def RIFE_AJI(
 	input : vs.VideoNode,
@@ -1134,17 +1203,13 @@ def RIFE_AJI(
 	if fps_num % fps_den != 0 :
 		raise vs.Error(f"模块 {func_name} 的子参数 fps_den 无法整除 fps_num：aji 路径只支持整数倍率")
 
+	_aji_load_plugin()
 	_check_plugin(func_name, "rife_aji")
 
-	aji_root = _aji_plugin_dir()
-	if not aji_root :
-		raise vs.Error(f"模块 {func_name} 无法定位 aji 运行时目录：请确认 rife_aji 插件已加载")
-	aji_dir = os.path.join(aji_root, "aji")
-	if not os.path.isdir(aji_dir) :
-		## 插件放在 vs-plugins/bin 下时，运行时仍在 vs-plugins/aji
-		aji_dir = os.path.join(os.path.dirname(aji_root), "aji")
-	if not os.path.isdir(aji_dir) :
-		raise vs.Error(f"模块 {func_name} 所请求的 aji 运行时目录不存在: {aji_dir}")
+	aji_dir = _aji_runtime_dir()
+	if not aji_dir :
+		raise vs.Error(f"模块 {func_name} 找不到 aji 运行时：请把 vsaji 的扁平包放到 <包根>\\vs-plugins\\aji\\，"
+						f"rife_aji.dll 放到 Lib\\site-packages\\vapoursynth\\plugins\\")
 
 	mdl_dir = os.path.join(aji_dir, "rife")
 	conf_dir = os.path.join(aji_dir, "conf")

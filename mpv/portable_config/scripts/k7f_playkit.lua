@@ -26,7 +26,7 @@ local opt = {
 	preset = "auto",          -- auto/upscale/memc/denoise/deband/clean/anime/live
 	target_h = 0,             -- 0 = 跟随屏幕高度
 	engine = "auto",          -- 超分引擎：auto/artcnn/acnet/cugan/edi/ngu/none
-	memc_engine = "auto",     -- 插帧引擎：auto/rife_nv/rife_dml/none
+	memc_engine = "auto",     -- 插帧引擎：auto/rife_nv/aji/rife_dml/none
 	memc_fps = 60,            -- 插帧目标帧率
 	denoise_lv = 3.0,         -- NLM 降噪强度
 	deband_rth = 48.0,        -- 去色带阈值

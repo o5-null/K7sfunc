@@ -24,11 +24,11 @@ mpv-playkit 不再从 PyPI 装 `k7sfunc`，而是按 commit 钉住本 fork 的�
 | `src/k7sfunc/mod_scale.py` / `mod_dbdn.py` / `mod_mix.py` | 仅替换 TensorRT 接入点：`_check_plugin(..., "trt")` → `_check_trt`、`core.trt.Version()` → `_trt_plugin_dir`、`BackendV2.TRT(...)` → `_trt_backend(...)`，算法与参数一律未改 |
 | `src/k7sfunc/_internal.py` | 新增 `_check_trt` / `_trt_plugin_dir` / `_trt_backend` 三个助手，其余保持上游原样 |
 | `src/k7sfunc/_external/vsmlrt.py` | 修 API4 字符串路径（`get_plugins_path`）、补 `get_engine_path` 的 `int8`/`fp8` 实参、去掉 TRT-RTX 不认的 `-CUDNN` tactic、容忍验证推理失败 |
-| `src/k7sfunc/__init__.py` | 一行导出 + 版本号改为 `1.9.0+pre.5` |
+| `src/k7sfunc/__init__.py` | 一行导出 + 版本号改为 `1.9.0+pre.7` |
 | `mpv/portable_config/scripts/k7f_playkit.lua` | 新增：mpv 前端，按配置生成临时 vpy 并挂到 `@PLAYKIT` 滤镜标签 |
 | `mpv/portable_config/script-opts/k7f_playkit.conf` | 新增：前端配置 |
 | `mpv/portable_config/vs/MEMC_*.vpy` | 新增：vs-framegen 的四个补帧脚本（DLSS-G / XeSS-FG / VFG / FSR4） |
-| `src/k7sfunc/mod_memc.py` + `mpv/portable_config/vs/MEMC_RIFE_AJI.vpy` | 仅追加：新增 `RIFE_AJI`（AnimeJaNai libaji 原生 RIFE；插件 `rife_aji` 在运行期按插件自身路径 dlopen `aji.dll`，插件与 aji 运行时都由拓展包 `vs-plugins/aji/` 提供；aji 路径只支持整数倍率） |
+| `src/k7sfunc/mod_memc.py` + `mpv/portable_config/vs/MEMC_RIFE_AJI.vpy` | 仅追加：新增 `RIFE_AJI`（AnimeJaNai libaji 原生 RIFE；插件 `rife_aji` 在运行期按插件自身路径 dlopen `aji.dll`；插件放 VS 插件目录，aji 运行时放 `vs-plugins\aji\`；aji 路径只支持整数倍率） |
 | `FORK.md` | 新增：本文件 |
 
 除 `mod_memc.py` 的纯追加外**不改上游已有模块的算法与参数**，对上游模块的改动只有 TensorRT 接入点这几处替换，上游更新时合并冲突面集中在 `__init__.py` 与这几个调用点。
@@ -53,7 +53,20 @@ mpv-playkit 不再从 PyPI 装 `k7sfunc`，而是按 commit 钉住本 fork 的�
 | `PLAYKIT_PRESETS` / `PLAYKIT_UPSCALE_ORDER` / `PLAYKIT_MEMC_ORDER` | 预设名与降级顺序 |
 
 超分引擎：`artcnn`(ARTCNN_NV) → `acnet`(ACNET_STD) → `cugan`(CUGAN_NV) → `edi`(EDI_US_STD) → `ngu`(NGU_HQ) → `none`（直接缩放）。
-插帧引擎：`rife_nv`(RIFE_NV) → `rife_dml`(RIFE_DML) → `none`。
+插帧引擎：`rife_nv`(RIFE_NV) → `aji`(RIFE_AJI，只支持整数倍率) → `rife_dml`(RIFE_DML) → `none`。
+
+## 依赖放置（跟随播放器的包布局）
+
+| 类型 | 位置 | 说明 |
+| --- | --- | --- |
+| VS 插件 DLL | `Lib\site-packages\vapoursynth\plugins\` | 进程启动时自动扫描（含子目录），算子侧不再写 `LoadPlugin` |
+| 插件运行期资源 | `<包根>\vs-plugins\` | 模型、引擎包、aji 运行时；不被自动加载，由算子按路径查找 |
+| 模型 | 插件自带的 `models\` 或 `<包根>\vs-plugins\models\` | 以算子文档里的"依赖目录"为准 |
+
+`rife_aji.dll` 是插件，`aji\`（`aji.dll`、`aji_trt.dll`、`cudart64_*.dll`、`trt\`、`conf\`、`rife\`）
+是运行期资源，所以拆开放：插件进 `plugins\`，运行时进 `vs-plugins\aji\`。算子按
+"插件自身目录 → 插件上级 → 包根 `vs-plugins\aji`"的顺序找运行时；调试时可用
+`AJI_PLUGIN`（指定 DLL）与 `AJI_DIR`（指定运行时目录）覆盖。
 
 ## 用法
 
@@ -90,7 +103,7 @@ clip.set_output()
 
 ## 版本与同步
 
-- 版本号 `1.9.0+pre.5`：基线是上游 1.8.1，`+pre.N` 表示本 fork 的预览迭代号。
+- 版本号 `1.9.0+pre.7`：基线是上游 1.8.1，`+pre.N` 表示本 fork 的预览迭代号。
 - 同步上游：`git remote add upstream https://github.com/LumeCraft-Labs/K7sfunc.git`，
   合并后把 `+pre.N` 递增；因为只新增文件，冲突通常只出现在 `__init__.py`。
 - 本包按源码树安装（不走 PyPI），所以 `src/k7sfunc/` 必须是可导入的完整包，

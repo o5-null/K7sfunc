@@ -1,7 +1,8 @@
 ### RIFE 补帧（AnimeJaNai · libaji 运行时）—— N 卡专用
-### 依赖：vs-plugins\rife_aji.dll + vs-plugins\aji\（aji.dll、aji_trt.dll、cudart64_*.dll、
-###       trt\nvinfer_11.dll、aji-runtime.json、conf\、rife\*.onnx；插件与 aji 运行时
-###       都由拓展包提供，构建方法见 https://github.com/o5-null/vsaji）
+### 依赖（按 K7 规则分两处）：plugins\rife_aji.dll（VS 插件，自动加载）
+###       + vs-plugins\aji\（aji.dll、aji_trt.dll、cudart64_*.dll、trt\nvinfer_11.dll、
+###       aji-runtime.json、conf\、rife\*.onnx；都是运行时资源，构建方法见
+###       https://github.com/o5-null/vsaji）
 ### 用法：vf set vapoursynth="~~/vs/MEMC_RIFE_AJI.vpy"
 ### 特点：固定整数倍率，每对相邻源帧按 phase 插 (fps_num/fps_den - 1) 张
 ### 注意：aji 的 factor 只吃整数，fps_num/fps_den 必须整除
@@ -42,15 +43,14 @@ if os.environ.get("AJI_SC_MODE"):
 if os.environ.get("AJI_GPU"):
     Gpu = int(os.environ["AJI_GPU"])
 
-#### 插件定位：优先自动加载（vs-plugins），否则从本脚本旁加载 ####
+#### 插件定位：规范布局由 VapourSynth 自动加载；下面只为手动解压的包兜底 ####
 
 _here = os.path.dirname(os.path.abspath(__file__))
 
 if not hasattr(core, "rife_aji"):
     for _cand in (
-        # mpv-playkit / mpv-lazy：<包根>\vs-plugins\rife_aji.dll
+        # 手动解压到 <包根>\vs-plugins\ 或与运行时同目录（非规范，仅兜底）
         os.path.join(_here, os.pardir, os.pardir, "vs-plugins", "rife_aji.dll"),
-        # 拓展包把插件和 aji 运行时放在同一个目录时
         os.path.join(_here, os.pardir, os.pardir, "vs-plugins", "aji", "rife_aji.dll"),
         os.path.join(_here, os.pardir, "vs-plugins", "rife_aji.dll"),
         os.path.join(_here, "rife_aji.dll"),
@@ -59,7 +59,7 @@ if not hasattr(core, "rife_aji"):
             core.std.LoadPlugin(os.path.abspath(_cand))
             break
     if not hasattr(core, "rife_aji"):
-        raise vs.Error("MEMC_RIFE_AJI: 找不到 rife_aji.dll（需要 vs-plugins\\rife_aji.dll 与 vs-plugins\\aji\\）")
+        raise vs.Error("MEMC_RIFE_AJI: 找不到 rife_aji.dll（应放在 Lib\\site-packages\\vapoursynth\\plugins\\）")
 
 #### 主流程 ####
 
