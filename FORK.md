@@ -28,6 +28,7 @@ mpv-playkit 不再从 PyPI 装 `k7sfunc`，而是按 commit 钉住本 fork 的�
 | `mpv/portable_config/scripts/k7f_playkit.lua` | 新增：mpv 前端，按配置生成临时 vpy 并挂到 `@PLAYKIT` 滤镜标签 |
 | `mpv/portable_config/script-opts/k7f_playkit.conf` | 新增：前端配置 |
 | `mpv/portable_config/vs/MEMC_*.vpy` | 新增：vs-framegen 的四个补帧脚本（DLSS-G / XeSS-FG / VFG / FSR4） |
+| `src/k7sfunc/mod_memc.py` + `mpv/portable_config/vs/MEMC_RIFE_AJI.vpy` | 仅追加：新增 `RIFE_AJI`（AnimeJaNai libaji 原生 RIFE；插件 `rife_aji` 在运行期按插件自身路径 dlopen `aji.dll`，插件与 aji 运行时都由拓展包 `vs-plugins/aji/` 提供；aji 路径只支持整数倍率） |
 | `FORK.md` | 新增：本文件 |
 
 除 `mod_memc.py` 的纯追加外**不改上游已有模块的算法与参数**，对上游模块的改动只有 TensorRT 接入点这几处替换，上游更新时合并冲突面集中在 `__init__.py` 与这几个调用点。

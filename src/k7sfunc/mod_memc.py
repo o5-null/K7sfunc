@@ -28,7 +28,7 @@ __all__ = [
 	"MVT_LQ", "MVT_MQ",
 	"DRBA_DML", "DRBA_NV",
 	"RIFE_STD", "RIFE_COREML", "RIFE_DML", "RIFE_NV",
-	"DLSSG_NV", "XESSFG_NV", "VFG_NV", "FSR4",
+	"DLSSG_NV", "XESSFG_NV", "VFG_NV", "FSR4", "RIFE_AJI",
 	"SVP_LQ", "SVP_HQ", "SVP_PRO"
 ]
 
@@ -1087,3 +1087,131 @@ def FSR4(
 		log=log,
 		func_name=func_name,
 	)
+
+##################################################
+## RIFE补帧 AnimeJaNai (libaji)
+##################################################
+
+def _aji_plugin_dir() -> str :
+	"""rife_aji 插件所在目录，aji 运行时按 <该目录>/aji 找。
+
+	与 _trt_plugin_dir 同一思路：插件位置由插件自己报告，不猜播放器目录结构。
+	"""
+	try :
+		plugin_path = core.rife_aji.Version()["path"]
+	except Exception :
+		plugin_path = None
+	if not plugin_path :
+		return ""
+	if isinstance(plugin_path, bytes) :
+		plugin_path = plugin_path.decode()
+	return os.path.dirname(plugin_path)
+
+def RIFE_AJI(
+	input : vs.VideoNode,
+	model : str = "4.14",
+	ensemble : bool = False,
+	fps_in : float = 23.976,
+	fps_num : int = 2,
+	fps_den : int = 1,
+	sc_mode : typing.Literal[0, 1] = 1,
+	gpu : int = 0,
+) -> vs.VideoNode :
+
+	func_name = "RIFE_AJI"
+	_validate_input_clip(func_name, input)
+	if not isinstance(model, str) or "." not in model :
+		raise vs.Error(f"模块 {func_name} 的子参数 model 的值无效")
+	_validate_bool(func_name, "ensemble", ensemble)
+	_validate_numeric(func_name, "fps_in", fps_in, min_val=0.0, exclusive_min=True)
+	_validate_numeric(func_name, "fps_num", fps_num, min_val=2, int_only=True)
+	if not isinstance(fps_den, int) or fps_den >= fps_num or fps_num/fps_den <= 1 :
+		raise vs.Error(f"模块 {func_name} 的子参数 fps_den 的值无效")
+	_validate_literal(func_name, "sc_mode", sc_mode, [0, 1])
+	_validate_numeric(func_name, "gpu", gpu, min_val=0, int_only=True)
+
+	## aji 的 factor 只有整数，非整数倍率直接拒绝（不回退到 FRAMEGEN_HUB）
+	if fps_num % fps_den != 0 :
+		raise vs.Error(f"模块 {func_name} 的子参数 fps_den 无法整除 fps_num：aji 路径只支持整数倍率")
+
+	_check_plugin(func_name, "rife_aji")
+
+	aji_root = _aji_plugin_dir()
+	if not aji_root :
+		raise vs.Error(f"模块 {func_name} 无法定位 aji 运行时目录：请确认 rife_aji 插件已加载")
+	aji_dir = os.path.join(aji_root, "aji")
+	if not os.path.isdir(aji_dir) :
+		## 插件放在 vs-plugins/bin 下时，运行时仍在 vs-plugins/aji
+		aji_dir = os.path.join(os.path.dirname(aji_root), "aji")
+	if not os.path.isdir(aji_dir) :
+		raise vs.Error(f"模块 {func_name} 所请求的 aji 运行时目录不存在: {aji_dir}")
+
+	mdl_dir = os.path.join(aji_dir, "rife")
+	conf_dir = os.path.join(aji_dir, "conf")
+	## conf 是运行期产物，缺失时补建，不依赖发行包预先放好
+	if not os.path.isdir(conf_dir) :
+		os.makedirs(conf_dir, exist_ok=True)
+
+	## 模型名 → aji 的模型号：aji 取 s.size()==2 ? s[1:2] : s[1:3]，即 "4.7"→"47"、"4.14"→"414"
+	mdl_base = model[:-5] if model.endswith("_lite") else model
+	mini = mdl_base.split(".")[1]
+	if not mini.isdigit() :
+		raise vs.Error(f"模块 {func_name} 的子参数 model 的值无效")
+	code = "4" + mini
+	if model.endswith("_lite") :
+		code = code + "1"
+
+	onnx_name = "rife_v" + model + ("_ensemble" if ensemble else "")
+	onnx_path = os.path.join(mdl_dir, onnx_name + ".onnx")
+	if not os.path.exists(onnx_path) :
+		raise vs.Error(f"模块 {func_name} 所请求的模型缺失: {onnx_path}")
+
+	## conf 里的 factor 只为启用 RIFE 链，真实倍率与插帧相位由 VS 侧的 factor 参数给
+	conf_body = (
+		"[global]\n"
+		"config_version=2\n"
+		"backend=TensorRT\n"
+		"logging=no\n"
+		"\n"
+		"[slot_1]\n"
+		"profile_name=k7 RIFE\n"
+		"chain_1_max_resolution=4096x2304\n"
+		"chain_1_max_fps=241\n"
+		"chain_1_rife=yes\n"
+		"chain_1_rife_factor_numerator=2\n"
+		"chain_1_rife_factor_denominator=1\n"
+		f"chain_1_rife_model={code}\n"
+		f"chain_1_rife_ensemble={'yes' if ensemble else 'no'}\n"
+	)
+	## sc_mode 0 交给 aji 自己的阈值检测；sc_mode 1 用 VS 侧属性，这里不写阈值
+	if sc_mode == 0 :
+		conf_body = conf_body + "chain_1_rife_scene_detect_threshold=0.150\n"
+
+	conf_path = os.path.join(conf_dir, f"rife_only_{code}.conf")
+	old_conf = None
+	if os.path.isfile(conf_path) :
+		with open(conf_path, "r", encoding="utf-8", newline="") as f :
+			old_conf = f.read()
+	if old_conf != conf_body :
+		with open(conf_path, "w", encoding="utf-8", newline="\n") as f :
+			f.write(conf_body)
+
+	## 场景切换：aji 的 scene_prop 只认 _SceneChangeNext，源头没打过就先补一次
+	if sc_mode == 1 and input.get_frame(0).props.get("_SceneChangeNext") is None :
+		cut0 = SCENE_DETECT(input=input, sc_mode=1)
+	else :
+		cut0 = input
+
+	factor = fps_num // fps_den
+	fin = core.rife_aji.Rife(cut0,
+		conf=conf_path,
+		rife_model_dir=mdl_dir,
+		factor=factor,
+		device=gpu,
+		scene_prop=1 if sc_mode == 1 else 0,
+		lib=os.path.join(aji_dir, "aji.dll"))
+
+	## 插件保持输入 fps、帧数乘 factor，必须改回真实输出帧率，否则播放成慢动作
+	output = core.std.AssumeFPS(clip=fin, fpsnum=int(round(fps_in * factor * 1e6)), fpsden=1000000)
+
+	return output

@@ -579,6 +579,34 @@ FSR4(input=?, multi=2, scene_threshold=0.25, camera=0, fps_in=23.976, gpu=None, 
 
 ***
 
+### RIFE_AJI
+
+> 所需依赖：  
+> plugins: [vsaji](https://github.com/o5-null/vsaji) 构建的 `rife_aji.dll` + `aji` 运行时包（从引擎源码构建，扁平放在同一层）
+
+```python
+RIFE_AJI(input=?, model="4.14", ensemble=False, fps_in=23.976, fps_num=2, fps_den=1, sc_mode=1, gpu=0)
+```
+
+用 AnimeJaNai 的 libaji 原生 RIFE 引擎补帧至固定整数倍（插件在运行期按插件自身路径 dlopen `aji.dll`，不依赖环境变量）。
+依赖目录：`<包根>\vs-plugins\aji\`（`rife_aji.dll`、`aji.dll`、`aji_trt.dll`、`cudart64_*.dll`、`aji-runtime.json`、`trt\nvinfer_11.dll`、`conf\`、`rife\*.onnx`；`trt\` 内还要有一份 `cudart64_*.dll`）。
+输入只收 4:2:0 的 8bit/10bit，输出帧数为 `(源帧数-1) * 倍数 + 1`。
+
+||||
+|:---|:---|:---|
+| <kbd>model</kbd> | 字符串 | 模型名，对应 `aji\rife\rife_v<model>[_ensemble].onnx` ，如 `4.14` / `4.7` / `4.25`（该模型包没有 `rife_v4.25_lite.onnx`，`4251` 会找不到文件） |
+| <kbd>ensemble</kbd> | `True`\|`False` | 是否用 ensemble 推理（更稳更慢，需要同名的 `_ensemble` 模型） |
+| <kbd>fps_in</kbd> | 浮点 | 指定输入源的帧率 |
+| <kbd>fps_num</kbd> | 整数 | <kbd>fps_num</kbd>/<kbd>fps_den</kbd> 即帧率倍数，**必须整除**（aji 的 `factor` 只吃整数） |
+| <kbd>fps_den</kbd> | 整数 ||
+| <kbd>sc_mode</kbd> | `0`\|`1` | 场景切换检测： `0` 交给 aji 自己的阈值， `1` 用 VS 侧的 `_SceneChangeNext` 属性 |
+| <kbd>gpu</kbd> | 整数 | 指定显卡， `0` 为排序一号 |
+
+> [!NOTE]
+> `conf\rife_only_<模型号>.conf` 由模块自动生成，里面的 factor 只为启用 RIFE 链，真实倍率与相位由 VS 侧给；`sc_mode=0` 时额外写入 `scene_detect_threshold=0.150`。
+
+***
+
 ### SVP_LQ
 
 > 所需依赖：[SVPflow1](https://github.com/hooke007/mpv_PlayKit/discussions/114) + [SVPflow2](https://github.com/hooke007/mpv_PlayKit/discussions/114)
