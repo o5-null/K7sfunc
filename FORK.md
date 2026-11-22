@@ -27,7 +27,10 @@ mpv-playkit 不再从 PyPI 装 `k7sfunc`，而是按 commit 钉住本 fork 的�
 | `src/k7sfunc/__init__.py` | 一行导出 + 版本号改为 `1.9.0+pre.7` |
 | `mpv/portable_config/scripts/k7f_playkit.lua` | 新增：mpv 前端，按配置生成临时 vpy 并挂到 `@PLAYKIT` 滤镜标签 |
 | `mpv/portable_config/script-opts/k7f_playkit.conf` | 新增：前端配置 |
-| `mpv/portable_config/vs/MEMC_*.vpy` | 新增：vs-framegen 的四个补帧脚本（DLSS-G / XeSS-FG / VFG / FSR4） |
+| `mpv/portable_config/vs/MEMC_*.vpy` | 新增：vs-framegen 的四个补帧脚本（DLSS-G / XeSS-FG / VFG / FSR4）；均接入参数桥 |
+| `mpv/portable_config/vs/k7f_bridge.py` | 新增：vpy 侧参数桥（解析 `user-data`、写 `<脚本>.k7f.json` 报告） |
+| `mpv/portable_config/scripts/k7f_bridge.lua` | 新增：mpv 侧参数桥（拼 `user-data`、轮询报告、OSD 格式化） |
+| `mpv/portable_config/scripts/k7f_vpypar.lua` | 新增：OSD 调参前端（重建滤镜 + 显示“设置/实际”） |
 | `src/k7sfunc/mod_memc.py` + `mpv/portable_config/vs/MEMC_RIFE_AJI.vpy` | 仅追加：新增 `RIFE_AJI`（AnimeJaNai libaji 原生 RIFE；插件 `rife_aji` 在运行期按插件自身路径 dlopen `aji.dll`；插件放 VS 插件目录，aji 运行时放 `vs-plugins\aji\`；aji 路径只支持整数倍率） |
 | `FORK.md` | 新增：本文件 |
 
@@ -100,6 +103,20 @@ clip.set_output()
 模型与 GPU 组件不在本仓库：仍按上游规则从
 [hooke007/dotfiles 的 mpv_addones](https://github.com/hooke007/dotfiles/releases/tag/mpv_addones)
 取，放进播放器根目录的 `vs-plugins/`。
+
+## 参数桥（下行 / 上行）
+
+四个 `MEMC_*.vpy` 统一走 `k7f_bridge`，不再各自解析 `user_data`：
+
+- 下行：`k7f_bridge.py` 的 `parse_user_data()` / `get()` 读 mpv 注入的 `user_data`，
+  优先级仍是 脚本字面量 < 环境变量 < `user-data`；`k7f_bridge.lua` 的 `build_user_data()`
+  供前端拼串，值里有空白或 `: , ; = "` 会被跳过并 warn。
+- 上行：脚本末尾 `publish()` 把实际参数写到同目录 `<脚本名>.k7f.json`（原子替换，
+  异常全部吞掉）；`k7f_vpypar.lua` 每 0.5 s 轮询，`status` 消息显示“设置/实际”两行。
+- 代价：上行只是状态快照，最多 0.5 s 延迟；改参仍然要重建滤镜、重新初始化引擎。
+- `MEMC_RIFE_AJI.vpy` 与 `k7f_playkit.lua` 生成的临时脚本暂未接 `publish()`。
+
+接口与排错详见 `docs/vpy-bridge.md`（src 仓库）。
 
 ## 版本与同步
 
