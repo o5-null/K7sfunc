@@ -69,7 +69,8 @@ if os.environ.get("VXESSFG_LOG"):
 _ud = _parse_user_data(globals().get("user_data"))
 if _ud:
     if "multi" in _ud:
-        Multi = max(2, min(4, int(float(_ud["multi"]))))
+        # sm86 后端的多帧生成有 bug：3×/4× 会让引擎自杀（0xe0d55001），这里只放行 2×
+        Multi = max(2, min(2, int(float(_ud["multi"]))))
     if "scene" in _ud:
         Scene = max(0.0, float(_ud["scene"]))
     if "pre_h" in _ud:
