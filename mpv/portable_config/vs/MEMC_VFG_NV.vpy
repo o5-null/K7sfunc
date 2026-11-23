@@ -1,6 +1,5 @@
 ### NVIDIA Video Frame Generation 补帧（NVVFG 模型）—— N 卡专用
-### 依赖：vs-plugins\vvfg.dll + vs-plugins\bin\vfg\（引擎包：nvVFXVideoFrameGeneration.dll 等；mpv-playkit / mpv-lazy 由拓展包提供）
-### 引擎包：vs-plugins\bin\vfg\（找不到时按脚本顺序回落；缺包报错，且该包不在公开 zip 里，需自备）
+### 依赖：vs-plugins\vvfg.dll + vs-plugins\bin\vfg\（引擎包：nvVFXVideoFrameGeneration.dll 等）
 ### 用法：vf set vapoursynth="~~/vs/MEMC_VFG_NV.vpy"
 ### 特点：固定 2×，模型只填一对相邻帧的中间那一张
 ### 注意：1080p 约 20 ms/对，且耗时几乎不随分辨率变化（4K 约 23 ms）
@@ -34,14 +33,6 @@ Log = False
 ## 整数，>0 时先把源预缩到这个高度再补帧
 ## <True|False> 每帧向 stderr 打一行 evaluate 耗时
 
-# 调试用环境变量覆盖（正常播放不用管）
-if os.environ.get("VVFG_SCENE"):
-    Scene = float(os.environ["VVFG_SCENE"])
-if os.environ.get("VVFG_PRE_H"):
-    Pre_H = int(os.environ["VVFG_PRE_H"])
-if os.environ.get("VVFG_LOG"):
-    Log = True
-
 #### OSD 参数通道：读 mpv 注入的 user_data 全局变量 ####
 # 前端脚本用 vf set 的 user-data 子参数传值，格式 "scene=0.35;gpu=0"（分隔符 ; 或 ,）
 #   vf set @VVFG:vapoursynth="~~/vs/MEMC_VFG_NV.vpy":user-data="scene=0.35;gpu=0"
@@ -61,6 +52,14 @@ def _parse_user_data(s):
     return opts
 
 
+# 调试用环境变量覆盖（正常播放不用管）
+if os.environ.get("VVFG_SCENE"):
+    Scene = float(os.environ["VVFG_SCENE"])
+if os.environ.get("VVFG_PRE_H"):
+    Pre_H = int(os.environ["VVFG_PRE_H"])
+if os.environ.get("VVFG_LOG"):
+    Log = True
+
 # 环境变量之后再套 OSD 参数，保证用户在 OSD 上的选择优先级最高
 # 注意：Multi 固定为 2，不处理 "multi" 键（插件写别的值会报错）
 _ud = _parse_user_data(globals().get("user_data"))
@@ -77,12 +76,12 @@ if _ud:
 
 #### 插件定位：优先自动加载（vs-plugins），否则从本脚本旁加载 ####
 
-_here = os.path.dirname(os.path.abspath(__file__))
-
 if not hasattr(core, "vvfg"):
+    _here = os.path.dirname(os.path.abspath(__file__))
     for _cand in (
-        # mpv-playkit / mpv-lazy：<包根>\vs-plugins\vvfg.dll
+        # mpv-playkit 包：vpy 在 <包根>\portable_config\vs，DLL 在 <包根>\vs-plugins
         os.path.join(_here, os.pardir, os.pardir, "vs-plugins", "vvfg.dll"),
+        # mpv-lazy / 开发树：<上层>\vs-plugins\vvfg.dll
         os.path.join(_here, os.pardir, "vs-plugins", "vvfg.dll"),
         os.path.join(_here, "vvfg.dll"),
         # 开发树：..\..\vs-dlssg\bin\vvfg.dll（脚本就在仓库 vs-dlssg\mpv\ 下时）
@@ -96,20 +95,6 @@ if not hasattr(core, "vvfg"):
     if not hasattr(core, "vvfg"):
         raise vs.Error("MEMC_VFG: 找不到 vvfg.dll")
 
-#### 引擎包定位：发行包放在 vs-plugins\bin\vfg\，开发树在 vs-dlssg\bin\vfg\ ####
-
-_proxy = None
-for _cand in (
-    os.path.join(_here, os.pardir, os.pardir, "vs-plugins", "bin", "vfg"),
-    os.path.join(_here, os.pardir, os.pardir, "vs-plugins", "vfg"),
-    os.path.join(_here, os.pardir, "vs-plugins", "bin", "vfg"),
-    os.path.join(_here, os.pardir, "vs-plugins", "vfg"),
-    os.path.join(_here, os.pardir, os.pardir, "vs-dlssg", "bin", "vfg"),
-):
-    if os.path.isdir(_cand):
-        _proxy = os.path.abspath(_cand)
-        break
-
 #### 主流程 ####
 
 clip = video_in
@@ -120,38 +105,35 @@ if Pre_H and clip.height > Pre_H:
     clip = core.resize.Bicubic(clip, width=_w, height=Pre_H)
 
 yuv_in = clip.format.color_family != vs.RGB
-fmt_in = clip.format.id
 
-# 插件只吃 RGBS（float32 三平面）
-src = core.resize.Bilinear(clip, format=vs.RGBS, matrix_in_s="709" if yuv_in else None)
+# 插件直接吃平面 YUV（矩阵/范围/色度位置从帧属性读，mpv 的 _ColorSpace/_ColorRange 正好对得上），
+# 不再中转 RGBS，省掉进出两趟全分辨率转换
+if yuv_in:
+    src = clip
+elif clip.format.sample_type == vs.FLOAT and clip.format.bits_per_sample == 32:
+    src = clip
+else:
+    src = core.resize.Bilinear(clip, format=vs.RGBS)
 fg = core.vvfg.FrameGen(src, multi=Multi, scene_threshold=Scene, log=1 if Log else 0,
-                        **({} if _proxy is None else {"proxy_dir": _proxy}),
                         **({} if Gpu is None else {"gpu": Gpu}))
 
-# 回到源像素格式；mpv 的 vf=vapoursynth 只接受有限的 8/10bit YUV 格式
-out = core.resize.Bilinear(
-    fg, format=fmt_in,
-    matrix_s="709" if yuv_in else None,
-    range_in_s="full",
-    range_s="limited" if yuv_in else "full",
-)
+# 输出格式与输入相同：YUV 源原样交给 mpv；只有 RGB 源才转回 mpv 能收的 10bit YUV
+out = fg if yuv_in else core.resize.Bilinear(fg, format=vs.YUV420P10, matrix_s="709")
 
-# 插件保持输入的 fps，帧数却变成 2 倍，必须改回真实输出帧率
-out = core.std.AssumeFPS(out, fpsnum=int(round(fps_in * Multi * 1e6)), fpsden=1000000)
+# 插件已把输出帧率乘以 Multi，并逐帧写好 _Duration/_AbsoluteTime；只有源没有帧率时才兜底
+if not out.fps_num or not out.fps_den:
+    out = core.std.AssumeFPS(out, fpsnum=int(round(fps_in * Multi * 1e6)), fpsden=1000000)
 
 # 上行报告：告诉 mpv 实际生效的参数；写盘失败只影响 OSD，不会被这里打断
 if k7fb is not None:
     _summary = "2×（固定） · 切镜 %g" % Scene
     if Pre_H:
         _summary += " · 预缩 %dp" % Pre_H
-    if _proxy is not None:
-        _summary += " · 引擎包"
     k7fb.publish(
         __file__, title="VFG", engine="vvfg",
         params={"multi": Multi, "scene": Scene,
                 "gpu": "auto" if Gpu is None else Gpu,
-                "pre_h": Pre_H, "log": Log,
-                "engine_pack": _proxy is not None},
+                "pre_h": Pre_H, "log": Log},
         summary=_summary,
         in_info=k7fb.clip_info(video_in, fps=fps_in), out_info=k7fb.clip_info(out),
     )

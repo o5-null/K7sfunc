@@ -1,6 +1,5 @@
 ### AMD FSR4 补帧（FidelityFX Frame Generation）—— 固定 2×
-### 依赖：vs-plugins\vfsr4.dll + vs-plugins\bin\fsr4\（引擎包：smv_fsrfg_bridge.dll + AMD FidelityFX；mpv-playkit / mpv-lazy 由拓展包提供）
-### 引擎包：vs-plugins\bin\fsr4\（找不到时按脚本顺序回落；缺包报 bin\fsr4 not found，且该包不在公开 zip 里，需自备）
+### 依赖：vs-plugins\vfsr4.dll + vs-plugins\bin\fsr4\（引擎包：smv_fsrfg_bridge.dll + AMD FidelityFX）
 ### 用法：vf set vapoursynth="~~/vs/MEMC_FSR4.vpy"
 ### 特点：固定 2×，走 D3D12 后备缓冲 + Vulkan（vkd3d）共享纹理
 ### 注意：1080p 约 38 ms/对，4K 约 144 ms；引擎包缺失时报 "bin\fsr4 not found"
@@ -35,14 +34,6 @@ Log = False
 ## 整数，>0 时先把源预缩到这个高度再补帧（4K 耗时吃紧时可填 1080）
 ## <True|False> 每帧向 stderr 打一行 evaluate 耗时
 
-# 调试用环境变量覆盖（正常播放不用管）
-if os.environ.get("VFSR4_SCENE"):
-    Scene = float(os.environ["VFSR4_SCENE"])
-if os.environ.get("VFSR4_PRE_H"):
-    Pre_H = int(os.environ["VFSR4_PRE_H"])
-if os.environ.get("VFSR4_LOG"):
-    Log = True
-
 #### OSD 参数通道：读 mpv 注入的 user_data 全局变量 ####
 # 前端脚本用 vf set 的 user-data 子参数传值，格式 "scene=0.35;camera=2"（分隔符 ; 或 ,）
 #   vf set @VFSR4:vapoursynth="~~/vs/MEMC_FSR4.vpy":user-data="scene=0.35;camera=2"
@@ -62,6 +53,14 @@ def _parse_user_data(s):
     return opts
 
 
+# 调试用环境变量覆盖（正常播放不用管）
+if os.environ.get("VFSR4_SCENE"):
+    Scene = float(os.environ["VFSR4_SCENE"])
+if os.environ.get("VFSR4_PRE_H"):
+    Pre_H = int(os.environ["VFSR4_PRE_H"])
+if os.environ.get("VFSR4_LOG"):
+    Log = True
+
 # 环境变量之后再套 OSD 参数，保证用户在 OSD 上的选择优先级最高
 # 注意：Multi 固定为 2，不处理 "multi" 键（插件写别的值会报错）
 _ud = _parse_user_data(globals().get("user_data"))
@@ -80,12 +79,12 @@ if _ud:
 
 #### 插件定位：优先自动加载（vs-plugins），否则从本脚本旁加载 ####
 
-_here = os.path.dirname(os.path.abspath(__file__))
-
 if not hasattr(core, "vfsr4"):
+    _here = os.path.dirname(os.path.abspath(__file__))
     for _cand in (
-        # mpv-playkit / mpv-lazy：<包根>\vs-plugins\vfsr4.dll
+        # mpv-playkit 包：vpy 在 <包根>\portable_config\vs，DLL 在 <包根>\vs-plugins
         os.path.join(_here, os.pardir, os.pardir, "vs-plugins", "vfsr4.dll"),
+        # mpv-lazy / 开发树：<上层>\vs-plugins\vfsr4.dll
         os.path.join(_here, os.pardir, "vs-plugins", "vfsr4.dll"),
         os.path.join(_here, "vfsr4.dll"),
         # 开发树：..\..\vs-dlssg\bin\vfsr4.dll（脚本就在仓库 vs-dlssg\mpv\ 下时）
@@ -99,20 +98,6 @@ if not hasattr(core, "vfsr4"):
     if not hasattr(core, "vfsr4"):
         raise vs.Error("MEMC_FSR4: 找不到 vfsr4.dll")
 
-#### 引擎包定位：发行包放在 vs-plugins\bin\fsr4\，开发树在 vs-dlssg\bin\fsr4\ ####
-
-_proxy = None
-for _cand in (
-    os.path.join(_here, os.pardir, os.pardir, "vs-plugins", "bin", "fsr4"),
-    os.path.join(_here, os.pardir, os.pardir, "vs-plugins", "fsr4"),
-    os.path.join(_here, os.pardir, "vs-plugins", "bin", "fsr4"),
-    os.path.join(_here, os.pardir, "vs-plugins", "fsr4"),
-    os.path.join(_here, os.pardir, os.pardir, "vs-dlssg", "bin", "fsr4"),
-):
-    if os.path.isdir(_cand):
-        _proxy = os.path.abspath(_cand)
-        break
-
 #### 主流程 ####
 
 clip = video_in
@@ -123,25 +108,25 @@ if Pre_H and clip.height > Pre_H:
     clip = core.resize.Bicubic(clip, width=_w, height=Pre_H)
 
 yuv_in = clip.format.color_family != vs.RGB
-fmt_in = clip.format.id
 
-# 插件只吃 RGBS（float32 三平面）
-src = core.resize.Bilinear(clip, format=vs.RGBS, matrix_in_s="709" if yuv_in else None)
+# 插件直接吃平面 YUV（矩阵/范围/色度位置从帧属性读，mpv 的 _ColorSpace/_ColorRange 正好对得上），
+# 不再中转 RGBS，省掉进出两趟全分辨率转换
+if yuv_in:
+    src = clip
+elif clip.format.sample_type == vs.FLOAT and clip.format.bits_per_sample == 32:
+    src = clip
+else:
+    src = core.resize.Bilinear(clip, format=vs.RGBS)
 fg = core.vfsr4.FrameGen(src, multi=Multi, scene_threshold=Scene, camera=Camera,
                          log=1 if Log else 0,
-                         **({} if _proxy is None else {"proxy_dir": _proxy}),
                          **({} if Gpu is None else {"gpu": Gpu}))
 
-# 回到源像素格式；mpv 的 vf=vapoursynth 只接受有限的 8/10bit YUV 格式
-out = core.resize.Bilinear(
-    fg, format=fmt_in,
-    matrix_s="709" if yuv_in else None,
-    range_in_s="full",
-    range_s="limited" if yuv_in else "full",
-)
+# 输出格式与输入相同：YUV 源原样交给 mpv；只有 RGB 源才转回 mpv 能收的 10bit YUV
+out = fg if yuv_in else core.resize.Bilinear(fg, format=vs.YUV420P10, matrix_s="709")
 
-# 插件保持输入的 fps，帧数却变成 2 倍，必须改回真实输出帧率
-out = core.std.AssumeFPS(out, fpsnum=int(round(fps_in * Multi * 1e6)), fpsden=1000000)
+# 插件已把输出帧率乘以 Multi，并逐帧写好 _Duration/_AbsoluteTime；只有源没有帧率时才兜底
+if not out.fps_num or not out.fps_den:
+    out = core.std.AssumeFPS(out, fpsnum=int(round(fps_in * Multi * 1e6)), fpsden=1000000)
 
 # 上行报告：告诉 mpv 实际生效的参数；写盘失败只影响 OSD，不会被这里打断
 if k7fb is not None:
@@ -150,14 +135,11 @@ if k7fb is not None:
         _summary += " · 相机 %d" % Camera
     if Pre_H:
         _summary += " · 预缩 %dp" % Pre_H
-    if _proxy is not None:
-        _summary += " · 引擎包"
     k7fb.publish(
         __file__, title="FSR4", engine="vfsr4",
         params={"multi": Multi, "scene": Scene, "camera": Camera,
                 "gpu": "auto" if Gpu is None else Gpu,
-                "pre_h": Pre_H, "log": Log,
-                "engine_pack": _proxy is not None},
+                "pre_h": Pre_H, "log": Log},
         summary=_summary,
         in_info=k7fb.clip_info(video_in, fps=fps_in), out_info=k7fb.clip_info(out),
     )

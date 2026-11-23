@@ -1,9 +1,9 @@
 ### XeSS-FG 补帧（Intel XeSS-FG model 15 · sm86 解锁引擎）—— N 卡（RTX 20/30）专用
-### 依赖：vs-plugins\vxessfg.dll + vs-plugins\bin\xessfg\（引擎包，没有它就报 proxy_dir 找不到；mpv-playkit / mpv-lazy 由拓展包提供）
-### 引擎包：vs-plugins\bin\xessfg\（找不到时按脚本顺序回落；缺包直接报 proxy_dir 找不到）
+### 依赖：vs-plugins\vxessfg.dll + 同级 xessfg\（引擎包；发行包里也可以放在 vs-plugins\bin\xessfg\）
 ### 用法：vf set vapoursynth="~~/vs/MEMC_XESSFG_NV.vpy"
 ### 特点：直接在相邻两帧之间插 Multi-1 张，输出帧率 = 源帧率 × Multi
-### 注意：上限 4×（引擎包 MaxGeneratedFrames=3）；1080p 约 38 ms/对，4K 约 144 ms，4K 不建议用
+### 注意：默认 2×；3× 及以上会触发引擎致命错误（0xe0d55001，进程直接退出），别在播放中试
+### 注意：1080p 约 38 ms/对，4K 约 144 ms，4K 不建议用
 ### 注意：NGX 每进程只能初始化一次，和 MEMC_DLSSG_NV 不能同时加载进同一个进程
 
 import os
@@ -22,28 +22,19 @@ except Exception:
 # 用户选项 #
 ############
 
-Multi = 3
+Multi = 2
 Scene = 0.25
 Gpu = None
 Pre_H = 0
 Log = False
 ## <2|3|4> 整数，帧率倍数；每对相邻源帧插 Multi-1 张
-##   1080p 用 2~3，1440p 以上建议 2（XeSS-FG 在 sm_86 上偏慢，4K 单次约 144 ms）
+##   默认 2：引擎 sm86 的 3× 多帧生成有 bug（MultiFrameIndex 2 重复 → 0xe0d55001 进程自杀），别调高
+##   1080p 用 2，1440p 以上也必须 2（XeSS-FG 在 sm_86 上偏慢，4K 单次约 144 ms）
 ## 浮点，切镜阈值（三平面 8 采样平均绝对差），0 关闭
 ##   快节奏/粒子闪白素材建议 0.25，否则默认行为会把部分帧对 hold 成重复帧；更稳妥用 0.35
 ## 整数，使用的显卡序号，0 为排序一号；None 跟随 sm86 代理在安装时选中的那张卡（多显卡机器推荐）
 ## 整数，>0 时先把源预缩到这个高度再补帧（4K 显存/耗时吃紧时可填 1080）
 ## <True|False> 每帧向 stderr 打一行 evaluate 耗时
-
-# 调试用环境变量覆盖（正常播放不用管）
-if os.environ.get("VXESSFG_MULTI"):
-    Multi = int(os.environ["VXESSFG_MULTI"])
-if os.environ.get("VXESSFG_SCENE"):
-    Scene = float(os.environ["VXESSFG_SCENE"])
-if os.environ.get("VXESSFG_PRE_H"):
-    Pre_H = int(os.environ["VXESSFG_PRE_H"])
-if os.environ.get("VXESSFG_LOG"):
-    Log = True
 
 #### OSD 参数通道：读 mpv 注入的 user_data 全局变量 ####
 # 前端脚本用 vf set 的 user-data 子参数传值，格式 "multi=4;scene=0.35"（分隔符 ; 或 ,）
@@ -64,6 +55,17 @@ def _parse_user_data(s):
     return opts
 
 
+# 调试用环境变量覆盖（正常播放不用管）
+if os.environ.get("VXESSFG_MULTI"):
+    Multi = int(os.environ["VXESSFG_MULTI"])
+if os.environ.get("VXESSFG_SCENE"):
+    Scene = float(os.environ["VXESSFG_SCENE"])
+if os.environ.get("VXESSFG_PRE_H"):
+    Pre_H = int(os.environ["VXESSFG_PRE_H"])
+if os.environ.get("VXESSFG_LOG"):
+    Log = True
+
+# 环境变量之后再套 OSD 参数，保证用户在 OSD 上的选择优先级最高
 _ud = _parse_user_data(globals().get("user_data"))
 if _ud:
     if "multi" in _ud:
@@ -80,12 +82,12 @@ if _ud:
 
 #### 插件定位：优先自动加载（vs-plugins），否则从本脚本旁加载 ####
 
-_here = os.path.dirname(os.path.abspath(__file__))
-
 if not hasattr(core, "vxessfg"):
+    _here = os.path.dirname(os.path.abspath(__file__))
     for _cand in (
-        # mpv-playkit / mpv-lazy：<包根>\vs-plugins\vxessfg.dll
+        # mpv-playkit 包：vpy 在 <包根>\portable_config\vs，DLL 在 <包根>\vs-plugins
         os.path.join(_here, os.pardir, os.pardir, "vs-plugins", "vxessfg.dll"),
+        # mpv-lazy / 开发树：<上层>\vs-plugins\vxessfg.dll
         os.path.join(_here, os.pardir, "vs-plugins", "vxessfg.dll"),
         os.path.join(_here, "vxessfg.dll"),
         # 开发树：..\..\vs-dlssg\bin\vxessfg.dll（脚本就在仓库 vs-dlssg\mpv\ 下时）
@@ -99,20 +101,6 @@ if not hasattr(core, "vxessfg"):
     if not hasattr(core, "vxessfg"):
         raise vs.Error("MEMC_XESSFG: 找不到 vxessfg.dll")
 
-#### 引擎包定位：发行包放在 vs-plugins\bin\xessfg\，开发树在 vs-dlssg\bin\xessfg\ ####
-
-_proxy = None
-for _cand in (
-    os.path.join(_here, os.pardir, os.pardir, "vs-plugins", "bin", "xessfg"),
-    os.path.join(_here, os.pardir, os.pardir, "vs-plugins", "xessfg"),
-    os.path.join(_here, os.pardir, "vs-plugins", "bin", "xessfg"),
-    os.path.join(_here, os.pardir, "vs-plugins", "xessfg"),
-    os.path.join(_here, os.pardir, os.pardir, "vs-dlssg", "bin", "xessfg"),
-):
-    if os.path.isdir(_cand):
-        _proxy = os.path.abspath(_cand)
-        break
-
 #### 主流程 ####
 
 clip = video_in
@@ -123,38 +111,35 @@ if Pre_H and clip.height > Pre_H:
     clip = core.resize.Bicubic(clip, width=_w, height=Pre_H)
 
 yuv_in = clip.format.color_family != vs.RGB
-fmt_in = clip.format.id
 
-# 插件只吃 RGBS（float32 三平面）
-src = core.resize.Bilinear(clip, format=vs.RGBS, matrix_in_s="709" if yuv_in else None)
+# 插件直接吃平面 YUV（矩阵/范围/色度位置从帧属性读，mpv 的 _ColorSpace/_ColorRange 正好对得上），
+# 不再中转 RGBS，省掉进出两趟全分辨率转换
+if yuv_in:
+    src = clip
+elif clip.format.sample_type == vs.FLOAT and clip.format.bits_per_sample == 32:
+    src = clip
+else:
+    src = core.resize.Bilinear(clip, format=vs.RGBS)
 fg = core.vxessfg.FrameGen(src, multi=Multi, scene_threshold=Scene, log=1 if Log else 0,
-                           **({} if _proxy is None else {"proxy_dir": _proxy}),
                            **({} if Gpu is None else {"gpu": Gpu}))
 
-# 回到源像素格式；mpv 的 vf=vapoursynth 只接受有限的 8/10bit YUV 格式
-out = core.resize.Bilinear(
-    fg, format=fmt_in,
-    matrix_s="709" if yuv_in else None,
-    range_in_s="full",
-    range_s="limited" if yuv_in else "full",
-)
+# 输出格式与输入相同：YUV 源原样交给 mpv；只有 RGB 源才转回 mpv 能收的 10bit YUV
+out = fg if yuv_in else core.resize.Bilinear(fg, format=vs.YUV420P10, matrix_s="709")
 
-# 插件保持输入的 fps，帧数却变成 Multi 倍，必须改回真实输出帧率
-out = core.std.AssumeFPS(out, fpsnum=int(round(fps_in * Multi * 1e6)), fpsden=1000000)
+# 插件已把输出帧率乘以 Multi，并逐帧写好 _Duration/_AbsoluteTime；只有源没有帧率时才兜底
+if not out.fps_num or not out.fps_den:
+    out = core.std.AssumeFPS(out, fpsnum=int(round(fps_in * Multi * 1e6)), fpsden=1000000)
 
 # 上行报告：告诉 mpv 实际生效的参数；写盘失败只影响 OSD，不会被这里打断
 if k7fb is not None:
     _summary = "%d× · 切镜 %g" % (Multi, Scene)
     if Pre_H:
         _summary += " · 预缩 %dp" % Pre_H
-    if _proxy is not None:
-        _summary += " · 引擎包"
     k7fb.publish(
         __file__, title="XeSS-FG", engine="vxessfg",
         params={"multi": Multi, "scene": Scene,
                 "gpu": "auto" if Gpu is None else Gpu,
-                "pre_h": Pre_H, "log": Log,
-                "engine_pack": _proxy is not None},
+                "pre_h": Pre_H, "log": Log},
         summary=_summary,
         in_info=k7fb.clip_info(video_in, fps=fps_in), out_info=k7fb.clip_info(out),
     )
