@@ -170,7 +170,10 @@ function M.write_json(path, data)
 	if not fh then
 		local dir = utils.split_path(path)
 		if dir and dir ~= '' and utils.mkdir_p then
-			pcall(utils.mkdir_p, dir)
+			local mok, merr = pcall(utils.mkdir_p, dir)
+			if not mok then
+				return false, ('建目录失败 %s：%s'):format(dir, tostring(merr))
+			end
 			fh, err = io.open(path, 'w')
 		end
 	end
@@ -193,6 +196,8 @@ function M.watch_status(script, interval, callback)
 	end
 
 	local last_text = nil
+	-- 解析失败的告警只报一次，避免每 0.5s 刷屏
+	local last_bad = false
 	local timer = mp.add_periodic_timer(interval or 0.5, function()
 		local fh = io.open(path, 'r')
 		if not fh then
@@ -214,7 +219,12 @@ function M.watch_status(script, interval, callback)
 
 		local ok, data = pcall(utils.parse_json, text)
 		if ok and type(data) == 'table' then
+			last_bad = false
 			callback(data, path)
+		elseif not last_bad then
+			-- 以前这里静默跳过：报告写坏了只会“实际参数一直不显示”，查不到原因
+			last_bad = true
+			mp.msg.warn(('上行报告解析失败，已忽略：%s'):format(path))
 		end
 	end)
 

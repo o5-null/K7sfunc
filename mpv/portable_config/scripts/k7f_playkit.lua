@@ -95,9 +95,20 @@ local function filter_on()
 end
 
 local function remove_filter()
-	if filter_on() then
-		mp.commandv("vf", "remove", "@" .. LABEL)
+	if not filter_on() then
+		return true
 	end
+	-- mpv 对“没找到的 remove”是静默成功：pcall 返回值要看，改完还要再查一遍链
+	local ok, ret, err = pcall(mp.commandv, "vf", "remove", "@" .. LABEL)
+	if not ok or ret ~= true then
+		msg.warn(string.format("移除 %s 滤镜失败: %s", LABEL, tostring(err or ret)))
+		return false
+	end
+	if filter_on() then
+		msg.warn(string.format("%s 滤镜没有被移除（仍在链上），本次改动会叠在旧滤镜上"), LABEL)
+		return false
+	end
+	return true
 end
 
 local function apply()
@@ -113,17 +124,30 @@ local function apply()
 	fh:close()
 	if not ok then
 		msg.warn("写入 vpy 失败: " .. tostring(write_err))
+		mp.osd_message("playkit: 写入 vpy 失败，详见日志", 3)
 		return
 	end
-	remove_filter()
-	mp.commandv("vf", "append", "@" .. LABEL .. ':vapoursynth="' .. path .. '"')
+	if not remove_filter() then
+		mp.osd_message("playkit: 旧滤镜没能移除，详见日志", 3)
+		return
+	end
+	local pok, pret, perr = pcall(mp.commandv, "vf", "append",
+		"@" .. LABEL .. ':vapoursynth="' .. path .. '"')
+	if not pok or pret ~= true then
+		msg.warn("挂载 playkit 滤镜失败: " .. tostring(perr or pret))
+		mp.osd_message("playkit: 挂载滤镜失败，详见日志", 3)
+		return
+	end
 	mp.osd_message(string.format("playkit: %s → %dp", opt.preset, target), 2)
 	msg.info(string.format("preset=%s target_h=%d engine=%s/%s",
 		opt.preset, target, opt.engine, opt.memc_engine))
 end
 
 local function off()
-	remove_filter()
+	if not remove_filter() then
+		mp.osd_message("playkit: 滤镜没能移除，详见日志", 3)
+		return
+	end
 	mp.osd_message("playkit: 已关闭", 2)
 end
 

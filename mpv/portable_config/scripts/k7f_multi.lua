@@ -88,22 +88,35 @@ local function clamp(value)
 end
 
 local function load_state()
-	local data = B.read_json(state_path())
+	local path = state_path()
+	local data, err = B.read_json(path)
 	local value = data and tonumber(data.multi)
 	if value then
 		multi = clamp(value)
+	elseif err == '解析失败' or err == '文件为空' then
+		-- 文件在、但读不出来：别静默退回默认倍速，不然“设了 5 倍却是 3 倍”查不到原因
+		msg.warn(('倍数设置文件无法读取，已按默认处理：%s（%s）'):format(tostring(path), tostring(err)))
 	end
 end
 
 local function save_state()
 	local path = state_path()
 	if not path then
+		msg.warn('倍数设置存不下来：拿不到状态文件路径（本次仅内存生效）')
 		return
 	end
 
 	-- 没有设定 = 删掉记录，下次启动回到各脚本默认
 	if not multi then
-		os.remove(path)
+		local fh = io.open(path, 'r')
+		if not fh then
+			return
+		end
+		fh:close()
+		local ok, err = os.remove(path)
+		if not ok then
+			msg.warn(('删不掉旧倍数设置 %s: %s'):format(path, tostring(err)))
+		end
 		return
 	end
 
@@ -185,8 +198,28 @@ local function push(chain)
 	applying = false
 	if not ok then
 		msg.warn('改写 vf 失败: ' .. tostring(err))
+		return false
 	end
-	return ok
+
+	-- 复核要等一拍：mpv 的属性写入是排到播放循环里生效的，立刻读回来可能还是旧链。
+	-- 只判断“链上根本没有 multi 这个键”，不比对具体值：另一个脚本紧接着重建链表是常事，
+	-- 值不同不代表这次没写成（值域/写入顺序由各脚本自己的观者兜）
+	mp.add_timeout(0.5, function()
+		if not multi then return end
+		local after = mp.get_property_native('vf')
+		if type(after) ~= 'table' then return end
+		local missing = false
+		for _, f in ipairs(after) do
+			if f.name == 'vapoursynth' and type(f.params) == 'table'
+				and B.parse_user_data(f.params['user-data'] or '').multi == nil then
+				missing = true
+			end
+		end
+		if missing then
+			msg.warn('倍数没能在滤镜链里生效（脚本冲突或链被反复重建），当前可能仍是脚本默认值')
+		end
+	end)
+	return true
 end
 
 -- 把当前设定套到正在跑的滤镜上（clear 时即去掉注入的键）
