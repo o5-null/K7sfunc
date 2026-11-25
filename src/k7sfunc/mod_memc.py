@@ -901,10 +901,11 @@ def SVP_PRO(
 ## 四个引擎共用一套宿主：vdlssg / vxessfg / vvfg / vfsr4（vs-framegen）
 ##################################################
 
-## 每个命名空间支持的倍率上限由引擎决定：vfsr4 固定 2，vxessfg 到 4
+## 每个命名空间支持的倍率由引擎决定：vfsr4 固定 2；vxessfg 在 sm86 上也只放行 2
+## （3×/4× 会触发 0xe0d55001 引擎自杀，见 mod_memc 的 XESSFG_NV 说明）
 FRAMEGEN_ENGINES = {
 	"vdlssg" : {"name" : "DLSS-G", "multi" : [2, 3, 4, 5, 6]},
-	"vxessfg" : {"name" : "XeSS-FG", "multi" : [2, 3, 4]},
+	"vxessfg" : {"name" : "XeSS-FG", "multi" : [2]},
 	"vvfg" : {"name" : "VFG", "multi" : [2, 3, 4, 5, 6]},
 	"vfsr4" : {"name" : "FSR4", "multi" : [2]},
 }
@@ -1002,7 +1003,7 @@ def DLSSG_NV(
 
 def XESSFG_NV(
 	input : vs.VideoNode,
-	multi : typing.Literal[2, 3, 4] = 2,
+	multi : typing.Literal[2] = 2,
 	scene_threshold : float = 0.25,
 	camera : typing.Literal[0, 1, 2, 3] = 0,
 	fps_in : float = 23.976,

@@ -9,7 +9,7 @@ mpv 会把它作为全局变量 user_data 注入脚本（默认空串；mpv 每�
 
 上行：vpy 把实际生效的参数写到脚本同目录的 `<脚本>.k7f.json`，这里用
 `k7f_bridge.watch_status()` 轮询（默认 0.5s），OSD 可显示“设置”和“实际”两行。
-下行字符串与上行文件格式都由 k7f_bridge.lua / k7f_bridge.py 统一定义。
+下行字符串与上行文件格式由 k7f_bridge.lua / k7sfunc.mod_vpy 统一定义。
 
 注意：改参 = 整条滤镜重建（引擎要重新初始化），不是逐帧实时；
 multi 会改变输出帧数，本来也只能重建。
@@ -74,7 +74,7 @@ local o = {
 }
 require 'mp.options'.read_options(o, 'k7f_vpypar')
 
--- 参数表：key 必须和 vpy 里 _parse_user_data() 认的键一致
+-- 参数表：key 必须和 k7sfunc.mod_vpy 的 FRAMEGEN_VPY_OPTIONS 认的键一致
 local params = {
     {
         key = 'multi', name = '倍数', default = '3',

@@ -38,7 +38,7 @@ function M.expand(path)
 	return path
 end
 
--- 与 k7f_bridge.py 的 parse_user_data 保持同一语义
+-- 与 k7sfunc.mod_vpy 的 VPY_PARSE_USER_DATA 保持同一语义
 function M.parse_user_data(text)
 	local opts = {}
 	if not text then

@@ -22,13 +22,13 @@ mpv-playkit 不再从 PyPI 装 `k7sfunc`，而是按 commit 钉住本 fork 的�
 | `src/k7sfunc/mod_playkit.py` | 新增：预设层，把上游算子组合成开箱即用的滤镜链 |
 | `src/k7sfunc/mod_memc.py` | 仅追加：新增帧生成补帧 `DLSSG_NV` / `XESSFG_NV` / `VFG_NV` / `FSR4` 与公用 helper `FRAMEGEN_HUB`（上游函数一行未改）；另把 NV 模块的 `core.trt` 依赖改为走 `_check_trt` / `_trt_backend` |
 | `src/k7sfunc/mod_scale.py` / `mod_dbdn.py` / `mod_mix.py` | 仅替换 TensorRT 接入点：`_check_plugin(..., "trt")` → `_check_trt`、`core.trt.Version()` → `_trt_plugin_dir`、`BackendV2.TRT(...)` → `_trt_backend(...)`，算法与参数一律未改 |
+| `src/k7sfunc/mod_vpy.py` | 新增：vpy 宿主层，`FRAMEGEN_VPY` 把 user_data/环境变量解析、插件定位、补帧主流程、上行报告收成一次调用（`VPY_LOAD_PLUGIN` 等助手可复用） |
 | `src/k7sfunc/_internal.py` | 新增 `_check_trt` / `_trt_plugin_dir` / `_trt_backend` 三个助手，其余保持上游原样 |
 | `src/k7sfunc/_external/vsmlrt.py` | 修 API4 字符串路径（`get_plugins_path`）、补 `get_engine_path` 的 `int8`/`fp8` 实参、去掉 TRT-RTX 不认的 `-CUDNN` tactic、容忍验证推理失败 |
-| `src/k7sfunc/__init__.py` | 一行导出 + 版本号改为 `1.9.0+pre.7` |
+| `src/k7sfunc/__init__.py` | 一行导出 + 版本号改为 `1.9.0+pre.8` |
 | `mpv/portable_config/scripts/k7f_playkit.lua` | 新增：mpv 前端，按配置生成临时 vpy 并挂到 `@PLAYKIT` 滤镜标签 |
 | `mpv/portable_config/script-opts/k7f_playkit.conf` | 新增：前端配置 |
-| `mpv/portable_config/vs/MEMC_*.vpy` | 新增：vs-framegen 的四个补帧脚本（DLSS-G / XeSS-FG / VFG / FSR4）；均接入参数桥 |
-| `mpv/portable_config/vs/k7f_bridge.py` | 新增：vpy 侧参数桥（解析 `user-data`、写 `<脚本>.k7f.json` 报告） |
+| `mpv/portable_config/vs/MEMC_*.vpy` | 新增：vs-framegen 的四个补帧脚本（DLSS-G / XeSS-FG / VFG / FSR4）；只留用户选项 + 一次 `k7f.FRAMEGEN_VPY(...)`（约 40 行） |
 | `mpv/portable_config/scripts/k7f_bridge.lua` | 新增：mpv 侧参数桥（拼 `user-data`、轮询报告、OSD 格式化） |
 | `mpv/portable_config/scripts/k7f_vpypar.lua` | 新增：OSD 调参前端（重建滤镜 + 显示“设置/实际”） |
 | `src/k7sfunc/mod_memc.py` + `mpv/portable_config/vs/MEMC_RIFE_AJI.vpy` | 仅追加：新增 `RIFE_AJI`（AnimeJaNai libaji 原生 RIFE；插件 `rife_aji` 在运行期按插件自身路径 dlopen `aji.dll`；插件放 VS 插件目录，aji 运行时放 `vs-plugins\aji\`；aji 路径只支持整数倍率） |
@@ -95,10 +95,14 @@ clip.set_output()
 `DLSSG_NV`(vdlssg) / `XESSFG_NV`(vxessfg) / `VFG_NV`(vvfg) / `FSR4`(vfsr4)。
 它们都接受 `RGBS` 或 YUV 输入（内部按 709 转换），输出回到源格式与真实输出帧率（`fps_in * multi`）。
 
-- 倍率：`DLSSG_NV` / `VFG_NV` 为 2–6，`XESSFG_NV` 为 2–4，`FSR4` 固定 2
+- 倍率：`DLSSG_NV` / `VFG_NV` 为 2–6，`XESSFG_NV` 只放行 2（sm86 上 3×/4× 会触发
+  `0xe0d55001` 引擎自杀），`FSR4` 固定 2
 - 单进程只支持一种帧尺寸；同一进程只能初始化一次 NGX（`vdlssg` 与 `vxessfg` 不能同时用）
 - 现成的前端脚本在 `mpv/portable_config/vs/MEMC_*.vpy`，插件与引擎包不在本仓库，
   由播放器的拓展包提供（`<包根>\vs-plugins\`，引擎包在 `vs-plugins\bin\<引擎>\`）
+
+mpv 端的现成脚本不直接调这四个算子，而是走 `FRAMEGEN_VPY`（见下节）：它对 mpv 的
+YUV 帧做直通（不再进出 RGBS 两趟全分辨率转换），只有 RGB 源才转回 `YUV420P10`。
 
 模型与 GPU 组件不在本仓库：仍按上游规则从
 [hooke007/dotfiles 的 mpv_addones](https://github.com/hooke007/dotfiles/releases/tag/mpv_addones)
@@ -106,21 +110,40 @@ clip.set_output()
 
 ## 参数桥（下行 / 上行）
 
-四个 `MEMC_*.vpy` 统一走 `k7f_bridge`，不再各自解析 `user_data`：
+四个 `MEMC_*.vpy` 只调一次 `k7f.FRAMEGEN_VPY`；解析、插件定位、主流程、上报都在
+`mod_vpy.py` 里，脚本本身只剩用户选项：
 
-- 下行：`k7f_bridge.py` 的 `parse_user_data()` / `get()` 读 mpv 注入的 `user_data`，
-  优先级仍是 脚本字面量 < 环境变量 < `user-data`；`k7f_bridge.lua` 的 `build_user_data()`
-  供前端拼串，值里有空白或 `: , ; = "` 会被跳过并 warn。
-- 上行：脚本末尾 `publish()` 把实际参数写到同目录 `<脚本名>.k7f.json`（原子替换，
+```python
+import k7sfunc as k7f
+
+Multi = 3
+Scene = 0.25
+# ... 用户选项 ...
+
+out = k7f.FRAMEGEN_VPY(
+	video_in, __file__, engine="vdlssg", fps_in=container_fps,
+	user_data=globals().get("user_data"),
+	multi=Multi, scene=Scene, preset=Preset, pre_h=Pre_H, gpu=Gpu, log=Log,
+)
+out.set_output()
+```
+
+- 下行：`VPY_PARSE_USER_DATA()` / `VPY_GET()` 读 mpv 注入的 `user_data`，
+  优先级仍是 脚本字面量 < 环境变量 `<NS>_<KEY>` < `user-data`；有类型转换与钳制
+  （multi 按引擎允许表、scene 0–1、其余下限 0；非法值提示一次后保持默认）。
+  `k7f_bridge.lua` 的 `build_user_data()` 供前端拼串，值里有空白或 `: , ; = "` 会被跳过并 warn。
+- 插件定位：`VPY_LOAD_PLUGIN()` 先看 `core.<ns>` 是否已自动加载，没有再按
+  包根 `vs-plugins/` → 脚本旁 `../`、`../../` → 开发树 `vs-dlssg/bin/` 的顺序 `LoadPlugin`。
+- 上行：脚本末尾 `VPY_PUBLISH()` 把实际参数写到同目录 `<脚本名>.k7f.json`（原子替换，
   异常全部吞掉）；`k7f_vpypar.lua` 每 0.5 s 轮询，`status` 消息显示“设置/实际”两行。
 - 代价：上行只是状态快照，最多 0.5 s 延迟；改参仍然要重建滤镜、重新初始化引擎。
-- `MEMC_RIFE_AJI.vpy` 与 `k7f_playkit.lua` 生成的临时脚本暂未接 `publish()`。
+- `MEMC_RIFE_AJI.vpy` 与 `k7f_playkit.lua` 生成的临时脚本暂未接 `VPY_PUBLISH()`。
 
 接口与排错详见 `docs/vpy-bridge.md`（src 仓库）。
 
 ## 版本与同步
 
-- 版本号 `1.9.0+pre.7`：基线是上游 1.8.1，`+pre.N` 表示本 fork 的预览迭代号。
+- 版本号 `1.9.0+pre.8`：基线是上游 1.8.1，`+pre.N` 表示本 fork 的预览迭代号。
 - 同步上游：`git remote add upstream https://github.com/LumeCraft-Labs/K7sfunc.git`，
   合并后把 `+pre.N` 递增；因为只新增文件，冲突通常只出现在 `__init__.py`。
 - 本包按源码树安装（不走 PyPI），所以 `src/k7sfunc/` 必须是可导入的完整包，
