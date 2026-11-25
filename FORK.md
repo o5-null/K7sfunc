@@ -98,6 +98,9 @@ clip.set_output()
 
 - 倍率：`DLSSG_NV` / `VFG_NV` 为 2–6，`XESSFG_NV` 只放行 2（sm86 上 3×/4× 会触发
   `0xe0d55001` 引擎自杀），`FSR4` 固定 2
+- 模型档位：只有 `VFG_NV` 有 `mode=0/1/2`（low/medium/high，默认 medium）。medium 与
+  high 只差约 0.4 dB PSNR-Y，但 1080p 每张内插约 3 ms vs 30 ms、显存约 0.7 vs 1.4 GB；
+  vpy 侧对应 `Mode` 字面量、环境变量 `VVFG_MODE`、`user-data="mode=2"`
 - 单进程只支持一种帧尺寸；同一进程只能初始化一次 NGX（`vdlssg` 与 `vxessfg` 不能同时用）
 - 现成的前端脚本在 `mpv/portable_config/vs/MEMC_*.vpy`，插件与引擎包不在本仓库，
   由播放器的拓展包提供（`<包根>\vs-plugins\`，引擎包在 `vs-plugins\bin\<引擎>\`）
@@ -144,7 +147,7 @@ out.set_output()
 
 ## 版本与同步
 
-- 版本号 `1.9.0+pre.9`：基线是上游 1.8.1，`+pre.N` 表示本 fork 的预览迭代号。
+- 版本号 `1.9.0+pre.10`：基线是上游 1.8.1，`+pre.N` 表示本 fork 的预览迭代号。
 - 同步上游：`git remote add upstream https://github.com/LumeCraft-Labs/K7sfunc.git`，
   合并后把 `+pre.N` 递增；因为只新增文件，冲突通常只出现在 `__init__.py`。
 - 本包按源码树安装（不走 PyPI），所以 `src/k7sfunc/` 必须是可导入的完整包，

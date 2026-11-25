@@ -46,17 +46,20 @@ SIDECAR_SUFFIX = ".k7f.json"
 FRAMEGEN_VPY_OPTIONS = {
 	"vdlssg" : ("multi", "scene", "preset", "pre_h", "gpu", "log"),
 	"vxessfg" : ("multi", "scene", "pre_h", "gpu", "log"),
-	"vvfg" : ("multi", "scene", "pre_h", "gpu", "log"),
+	"vvfg" : ("multi", "mode", "scene", "pre_h", "gpu", "log"),
 	"vfsr4" : ("scene", "camera", "pre_h", "gpu", "log"),
 }
 
-## 插件构造函数额外接受的参数（vdlssg 的模型档、vfsr4 的相机运动）
+## 插件构造函数额外接受的参数（vdlssg 的模型档、vvfg 的模型档位、vfsr4 的相机运动）
 _FRAMEGEN_PLUGIN_ARGS = {
 	"vdlssg" : ("preset",),
 	"vxessfg" : (),
-	"vvfg" : (),
+	"vvfg" : ("mode",),
 	"vfsr4" : ("camera",),
 }
+
+## vvfg 档位的显示名（0 低 / 1 中 / 2 高，对应引擎的 low/medium/high 模型）
+_FRAMEGEN_MODE_LABELS = {0 : "low", 1 : "medium", 2 : "high"}
 
 ## 找不到 DLL 时的报错前缀，与旧脚本一致（用户照着报错找脚本）
 _FRAMEGEN_SCRIPT_LABELS = {
@@ -77,6 +80,7 @@ _FRAMEGEN_TITLES = {
 ## 各键的取值规则：cast(int/float/bool/str/"gpu") + 上下限（multi 的界由引擎决定）
 _FRAMEGEN_VALUE_SPECS = {
 	"multi" : (int, None, None),
+	"mode" : (int, 0, 2),
 	"scene" : (float, 0.0, 1.0),
 	"camera" : (int, 0, None),
 	"pre_h" : (int, 0, None),
@@ -410,6 +414,7 @@ def FRAMEGEN_VPY(
 	fps_in,
 	user_data = None,
 	multi : int = 2,
+	mode : int = 1,
 	scene : float = 0.25,
 	camera : int = 0,
 	preset : typing.Optional[str] = None,
@@ -435,7 +440,7 @@ def FRAMEGEN_VPY(
 		raise vs.Error(f"FRAMEGEN_VPY: 不认识的引擎 {engine!r}")
 
 	values = _resolve_framegen_values(engine, user_data, {
-		"multi" : multi, "scene" : scene, "camera" : camera,
+		"multi" : multi, "mode" : mode, "scene" : scene, "camera" : camera,
 		"preset" : preset, "pre_h" : pre_h, "gpu" : gpu, "log" : bool(log),
 	})
 
@@ -472,7 +477,8 @@ def FRAMEGEN_VPY(
 	args = {"multi" : values["multi"], "scene_threshold" : values["scene"],
 			"log" : 1 if values["log"] else 0}
 	for key in _FRAMEGEN_PLUGIN_ARGS[engine] :
-		if key == "camera" or values[key] :
+		# camera/mode 的 0 是合法取值，不能按真假丢；其余键是"有值才传"
+		if key in ("camera", "mode") or values[key] :
 			args[key] = values[key]
 	if values["gpu"] is not None :
 		args["gpu"] = values["gpu"]
@@ -527,6 +533,9 @@ def _publish_framegen(script_file, engine : str, values : dict, fps, video_in, o
 	keys = FRAMEGEN_VPY_OPTIONS[engine]
 	# FSR4 固定 2×，摘要里写死（与旧脚本文案一致）
 	label = "2×（固定）" if engine == "vfsr4" else "%d×" % values["multi"]
+	# VFG 的模型档位直接写进摘要：换档是用户当场改的，OSD 上要能看见
+	if "mode" in keys :
+		label += " · 档位 %s" % _FRAMEGEN_MODE_LABELS.get(values["mode"], values["mode"])
 
 	if "preset" in keys :
 		summary = "%s · 预设 %s · 切镜 %g" % (label, values["preset"], values["scene"])
@@ -538,6 +547,8 @@ def _publish_framegen(script_file, engine : str, values : dict, fps, video_in, o
 		summary += " · 预缩 %dp" % values["pre_h"]
 
 	params = {"multi" : values["multi"], "scene" : values["scene"]}
+	if "mode" in keys :
+		params["mode"] = values["mode"]
 	if "preset" in keys :
 		params["preset"] = values["preset"]
 	if "camera" in keys :

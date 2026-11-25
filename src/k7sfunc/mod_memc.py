@@ -921,10 +921,14 @@ def FRAMEGEN_HUB(
 	proxy_dir,
 	log : bool,
 	func_name : str,
+	mode : int = 1,
 ) -> vs.VideoNode :
 
 	_validate_input_clip(func_name, input)
 	_validate_literal(func_name, "multi", multi, FRAMEGEN_ENGINES[engine_ns]["multi"])
+	# 模型档位只有 VFG 有（low/medium/high）；其余引擎收到 mode 也不会往下传
+	if engine_ns == "vvfg" :
+		_validate_literal(func_name, "mode", mode, [0, 1, 2])
 	_validate_numeric(func_name, "scene_threshold", scene_threshold, min_val=0.0, max_val=1.0)
 	_validate_numeric(func_name, "camera", camera, min_val=0, int_only=True)
 	_validate_numeric(func_name, "fps_in", fps_in, min_val=0.0, exclusive_min=True)
@@ -948,6 +952,8 @@ def FRAMEGEN_HUB(
 								matrix_in_s="709" if yuv_in else None)
 
 	args = {"multi" : multi, "scene_threshold" : scene_threshold, "log" : 1 if log else 0}
+	if engine_ns == "vvfg" :
+		args["mode"] = mode
 	if camera :
 		args["camera"] = camera
 	if gpu is not None :
@@ -1036,6 +1042,7 @@ def VFG_NV(
 	input : vs.VideoNode,
 	multi : typing.Literal[2, 3, 4, 5, 6] = 2,
 	scene_threshold : float = 0.25,
+	mode : typing.Literal[0, 1, 2] = 1,
 	camera : typing.Literal[0, 1, 2, 3] = 0,
 	fps_in : float = 23.976,
 	gpu : typing.Optional[int] = None,
@@ -1045,6 +1052,8 @@ def VFG_NV(
 
 	func_name = "VFG_NV"
 	_validate_literal(func_name, "camera", camera, [0, 1, 2, 3])
+	# 0 低 / 1 中 / 2 高；medium 与 high 只差 0.4 dB PSNR-Y，速度差 2 倍多
+	_validate_literal(func_name, "mode", mode, [0, 1, 2])
 
 	return FRAMEGEN_HUB(
 		input=input,
@@ -1057,6 +1066,7 @@ def VFG_NV(
 		proxy_dir=proxy_dir,
 		log=log,
 		func_name=func_name,
+		mode=mode,
 	)
 
 ##################################################
