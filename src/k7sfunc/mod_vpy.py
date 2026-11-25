@@ -217,6 +217,11 @@ def _resolve_framegen_values(engine : str, user_data, literal : dict) -> dict :
 		if hi is not None and value > hi :
 			values[key] = hi
 
+	# DLSS-G 的模型档位：没指定就用插件的默认档（与旧脚本 Preset="a" 一致），
+	# 免得摘要里出现 "预设 None"
+	if engine == "vdlssg" and not values.get("preset") :
+		values["preset"] = "a"
+
 	return values
 
 ##################################################
