@@ -26,7 +26,7 @@ mpv-playkit 不再从 PyPI 装 `k7sfunc`，而是按 commit 钉住本 fork 的�
 | `src/k7sfunc/_vpy_debug.py` | 新增：调试埋点，只有 `log` 打开时才执行。`Stages` 记构图各阶段耗时，`attach_frame_probe` 用两层 `std.FrameEval` 逐帧记请求/就绪时刻、单帧延迟、同飞帧数与线程号（排查"VS 是否靠并发掩盖 GPU 等待"） |
 | `src/k7sfunc/_internal.py` | 新增 `_check_trt` / `_trt_plugin_dir` / `_trt_backend` 三个助手，其余保持上游原样 |
 | `src/k7sfunc/_external/vsmlrt.py` | 修 API4 字符串路径（`get_plugins_path`）、补 `get_engine_path` 的 `int8`/`fp8` 实参、去掉 TRT-RTX 不认的 `-CUDNN` tactic、容忍验证推理失败 |
-| `src/k7sfunc/__init__.py` | 一行导出 + 版本号改为 `1.9.0+pre.8` |
+| `src/k7sfunc/__init__.py` | 一行导出 + 版本号改为 `1.9.0+pre.9` |
 | `mpv/portable_config/scripts/k7f_playkit.lua` | 新增：mpv 前端，按配置生成临时 vpy 并挂到 `@PLAYKIT` 滤镜标签 |
 | `mpv/portable_config/script-opts/k7f_playkit.conf` | 新增：前端配置 |
 | `mpv/portable_config/vs/MEMC_*.vpy` | 新增：vs-framegen 的四个补帧脚本（DLSS-G / XeSS-FG / VFG / FSR4）；只留用户选项 + 一次 `k7f.FRAMEGEN_VPY(...)`（约 40 行） |
@@ -144,7 +144,7 @@ out.set_output()
 
 ## 版本与同步
 
-- 版本号 `1.9.0+pre.8`：基线是上游 1.8.1，`+pre.N` 表示本 fork 的预览迭代号。
+- 版本号 `1.9.0+pre.9`：基线是上游 1.8.1，`+pre.N` 表示本 fork 的预览迭代号。
 - 同步上游：`git remote add upstream https://github.com/LumeCraft-Labs/K7sfunc.git`，
   合并后把 `+pre.N` 递增；因为只新增文件，冲突通常只出现在 `__init__.py`。
 - 本包按源码树安装（不走 PyPI），所以 `src/k7sfunc/` 必须是可导入的完整包，
