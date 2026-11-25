@@ -22,7 +22,8 @@ mpv-playkit 不再从 PyPI 装 `k7sfunc`，而是按 commit 钉住本 fork 的�
 | `src/k7sfunc/mod_playkit.py` | 新增：预设层，把上游算子组合成开箱即用的滤镜链 |
 | `src/k7sfunc/mod_memc.py` | 仅追加：新增帧生成补帧 `DLSSG_NV` / `XESSFG_NV` / `VFG_NV` / `FSR4` 与公用 helper `FRAMEGEN_HUB`（上游函数一行未改）；另把 NV 模块的 `core.trt` 依赖改为走 `_check_trt` / `_trt_backend` |
 | `src/k7sfunc/mod_scale.py` / `mod_dbdn.py` / `mod_mix.py` | 仅替换 TensorRT 接入点：`_check_plugin(..., "trt")` → `_check_trt`、`core.trt.Version()` → `_trt_plugin_dir`、`BackendV2.TRT(...)` → `_trt_backend(...)`，算法与参数一律未改 |
-| `src/k7sfunc/mod_vpy.py` | 新增：vpy 宿主层，`FRAMEGEN_VPY` 把 user_data/环境变量解析、插件定位、补帧主流程、上行报告收成一次调用（`VPY_LOAD_PLUGIN` 等助手可复用） |
+| `src/k7sfunc/mod_vpy.py` | 新增：vpy 宿主层，`FRAMEGEN_VPY` 把 user_data/环境变量解析、插件定位、补帧主流程、上行报告收成一次调用（`VPY_LOAD_PLUGIN` 等助手可复用）；`log` 打开时另有构图阶段计时与 `[vpy-debug]` 逐帧探针（见 `_vpy_debug.py`） |
+| `src/k7sfunc/_vpy_debug.py` | 新增：调试埋点，只有 `log` 打开时才执行。`Stages` 记构图各阶段耗时，`attach_frame_probe` 用两层 `std.FrameEval` 逐帧记请求/就绪时刻、单帧延迟、同飞帧数与线程号（排查"VS 是否靠并发掩盖 GPU 等待"） |
 | `src/k7sfunc/_internal.py` | 新增 `_check_trt` / `_trt_plugin_dir` / `_trt_backend` 三个助手，其余保持上游原样 |
 | `src/k7sfunc/_external/vsmlrt.py` | 修 API4 字符串路径（`get_plugins_path`）、补 `get_engine_path` 的 `int8`/`fp8` 实参、去掉 TRT-RTX 不认的 `-CUDNN` tactic、容忍验证推理失败 |
 | `src/k7sfunc/__init__.py` | 一行导出 + 版本号改为 `1.9.0+pre.8` |

@@ -22,6 +22,7 @@ import typing
 import vapoursynth as vs
 
 from ._internal import core
+from . import _vpy_debug
 from .mod_memc import FRAMEGEN_ENGINES
 
 __all__ = [
@@ -438,6 +439,11 @@ def FRAMEGEN_VPY(
 		"preset" : preset, "pre_h" : pre_h, "gpu" : gpu, "log" : bool(log),
 	})
 
+	# 调试埋点：只有 log 打开时才建计时器/套探针，正常播放这两行什么都不做
+	stages = _vpy_debug.Stages() if values["log"] else None
+	if stages :
+		stages.mark("resolve")
+
 	# 容器帧率缺失时退回 clip.fps；两者都没有才会走 AssumeFPS 的 0 帧率
 	fps = float(fps_in) if fps_in and float(fps_in) > 1.0 else input.fps
 
@@ -445,8 +451,12 @@ def FRAMEGEN_VPY(
 	if values["pre_h"] and clip.height > values["pre_h"] :
 		_width = int(round(clip.width * values["pre_h"] / clip.height / 2.0)) * 2
 		clip = core.resize.Bicubic(clip, width=_width, height=values["pre_h"])
+	if stages :
+		stages.mark("resize")
 
 	VPY_LOAD_PLUGIN(engine, script_file, _FRAMEGEN_SCRIPT_LABELS[engine])
+	if stages :
+		stages.mark("load")
 
 	## 插件直接吃平面 YUV，省掉进出两趟全分辨率转换；RGB 只把 8/16bit 提到 RGBS
 	yuv_in = clip.format.color_family != vs.RGB
@@ -456,6 +466,8 @@ def FRAMEGEN_VPY(
 		src = clip
 	else :
 		src = core.resize.Bilinear(clip, format=vs.RGBS)
+	if stages :
+		stages.mark("prep")
 
 	args = {"multi" : values["multi"], "scene_threshold" : values["scene"],
 			"log" : 1 if values["log"] else 0}
@@ -465,7 +477,10 @@ def FRAMEGEN_VPY(
 	if values["gpu"] is not None :
 		args["gpu"] = values["gpu"]
 
+	# 建节点包含引擎/代理初始化与首帧预热，是构图耗时的大头
 	fg = getattr(core, engine).FrameGen(src, **args)
+	if stages :
+		stages.mark("framegen")
 
 	## 输出格式与输入相同：YUV 源原样交给 mpv；只有 RGB 源才转回 10bit YUV
 	out = fg if yuv_in else core.resize.Bilinear(fg, format=vs.YUV420P10, matrix_s="709")
@@ -477,9 +492,34 @@ def FRAMEGEN_VPY(
 			fpsnum=int(round(fps * values["multi"] * 1e6)),
 			fpsden=1000000,
 		)
+	if stages :
+		stages.mark("fps")
 
 	_publish_framegen(script_file, engine, values, fps, input, out)
+	if stages :
+		stages.mark("publish")
+
+	if stages :
+		_vpy_debug.dbg(_debug_config(engine, values, fps, input, out))
+		# 逐帧探针：请求/就绪时间、单帧延迟、在飞帧数、线程号（见 _vpy_debug）
+		out = _vpy_debug.attach_frame_probe(core, out, tag = engine)
+		stages.mark("probe")
+		_vpy_debug.dbg(f"stage {stages.report()}")
+
 	return out
+
+
+def _debug_config(engine : str, values : dict, fps, video_in, out) -> str :
+	"""调试模式下的一行构图摘要：实际参数 + 进出尺寸/帧率，方便和跑分表对齐。"""
+
+	params = " ".join(
+		f"{key}={values[key]}" for key in FRAMEGEN_VPY_OPTIONS[engine] if key != "log"
+	)
+	in_info = VPY_CLIP_INFO(video_in, fps = fps) or {}
+	out_info = VPY_CLIP_INFO(out) or {}
+	return (f"config {params} in={in_info.get('w')}x{in_info.get('h')}"
+		f"@{in_info.get('fps')} out={out_info.get('w')}x{out_info.get('h')}"
+		f"@{out_info.get('fps')}")
 
 def _publish_framegen(script_file, engine : str, values : dict, fps, video_in, out) -> None :
 	"""按引擎拼 OSD 摘要与参数字段，写 sidecar；失败不影响播放。"""
