@@ -20,7 +20,7 @@ mpv-playkit 不再从 PyPI 装 `k7sfunc`，而是按 commit 钉住本 fork 的�
 | 文件 | 性质 |
 | --- | --- |
 | `src/k7sfunc/mod_playkit.py` | 新增：预设层，把上游算子组合成开箱即用的滤镜链 |
-| `src/k7sfunc/mod_memc.py` | 仅追加：新增帧生成补帧 `DLSSG_NV` / `XESSFG_NV` / `VFG_NV` / `FSR4` 与公用 helper `FRAMEGEN_HUB`（上游函数一行未改）；另把 NV 模块的 `core.trt` 依赖改为走 `_check_trt` / `_trt_backend` |
+| `src/k7sfunc/mod_framegen.py` | 仅追加：新增帧生成补帧 `DLSSG_NV` / `XESSFG_NV` / `VFG_NV` / `FSR4` 与公用 helper `FRAMEGEN_HUB`（上游函数一行未改）；另把 NV 模块的 `core.trt` 依赖改为走 `_check_trt` / `_trt_backend` |
 | `src/k7sfunc/mod_scale.py` / `mod_dbdn.py` / `mod_mix.py` | 仅替换 TensorRT 接入点：`_check_plugin(..., "trt")` → `_check_trt`、`core.trt.Version()` → `_trt_plugin_dir`、`BackendV2.TRT(...)` → `_trt_backend(...)`，算法与参数一律未改 |
 | `src/k7sfunc/mod_vpy.py` | 新增：vpy 宿主层，`FRAMEGEN_VPY` 把 user_data/环境变量解析、插件定位、补帧主流程、上行报告收成一次调用（`VPY_LOAD_PLUGIN` 等助手可复用）；`log` 打开时另有构图阶段计时与 `[vpy-debug]` 逐帧探针（见 `_vpy_debug.py`） |
 | `src/k7sfunc/_vpy_debug.py` | 新增：调试埋点，只有 `log` 打开时才执行。`Stages` 记构图各阶段耗时，`attach_frame_probe` 用两层 `std.FrameEval` 逐帧记请求/就绪时刻、单帧延迟、同飞帧数与线程号（排查"VS 是否靠并发掩盖 GPU 等待"） |
@@ -33,10 +33,11 @@ mpv-playkit 不再从 PyPI 装 `k7sfunc`，而是按 commit 钉住本 fork 的�
 | `mpv/portable_config/scripts/k7f_bridge.lua` | 新增：mpv 侧参数桥（拼 `user-data`、轮询报告、OSD 格式化） |
 | `mpv/portable_config/scripts/k7f_vpypar.lua` | 新增：OSD 调参前端（按滤镜链自动认引擎、参数候选值按引擎给出、改参后原地重建该条 vpy、显示“设置/实际”） |
 | `mpv/portable_config/scripts/k7f_multi.lua` | 新增：倍数统一管理。把当前倍数写进每条 vpy 的 `user-data`；原生滤镜由 `native <vf>:<参数>` 消息一次性建链（倍率跟随倍数，未设定时 2×） |
-| `src/k7sfunc/mod_memc.py` + `mpv/portable_config/vs/MEMC_RIFE_AJI.vpy` | 仅追加：新增 `RIFE_AJI`（AnimeJaNai libaji 原生 RIFE；插件 `rife_aji` 在运行期按插件自身路径 dlopen `aji.dll`；插件放 VS 插件目录，aji 运行时放 `vs-plugins\aji\`；aji 路径只支持整数倍率）、`UPSCALE_AJI`（libaji 超分链）、`TEMPORAL_FIX_AJI`（temporalfix，1:1，可叠加在任意插帧/超分结果之后） |
+| `src/k7sfunc/mod_aji.py` + `mpv/portable_config/vs/MEMC_RIFE_AJI.vpy` | 仅追加：新增 `RIFE_AJI`（AnimeJaNai libaji 原生 RIFE；插件 `rife_aji` 在运行期按插件自身路径 dlopen `aji.dll`；插件放 VS 插件目录，aji 运行时放 `vs-plugins\aji\`；aji 路径只支持整数倍率）、`UPSCALE_AJI`（libaji 超分链）、`TEMPORAL_FIX_AJI`（temporalfix，1:1，可叠加在任意插帧/超分结果之后） |
+| `src/k7sfunc/mod_mvt.py` / `mod_drba.py` / `mod_rife.py` / `mod_svp.py` / `mod_framegen.py` / `mod_aji.py` | 拆分：`mod_memc.py`（1461 行）按引擎家族搬成 6 个模块，`mod_memc.py` 退化成 19 行门面（`__all__` 18 项与顺序不变，`mod_playkit` / `mod_vpy` / `__init__` 的 import 路径不变），函数正文逐字节未改 |
 | `FORK.md` | 新增：本文件 |
 
-除 `mod_memc.py` 的纯追加外**不改上游已有模块的算法与参数**，对上游模块的改动只有 TensorRT 接入点这几处替换，上游更新时合并冲突面集中在 `__init__.py` 与这几个调用点。
+除上述纯追加外**不改上游已有模块的算法与参数**，对上游模块的改动只有 TensorRT 接入点这几处替换，上游更新时合并冲突面集中在 `__init__.py` 与这几个调用点。
 
 ## PLAYKIT_* 接口
 
@@ -94,7 +95,7 @@ clip.set_output()
 
 ## 帧生成补帧（vs-framegen）
 
-`mod_memc.py` 追加了四个引擎的封装，宿主源码来自 [o5-null/vs-framegen](https://github.com/o5-null/vs-framegen)：
+`mod_framegen.py` 追加了四个引擎的封装，宿主源码来自 [o5-null/vs-framegen](https://github.com/o5-null/vs-framegen)：
 `DLSSG_NV`(vdlssg) / `XESSFG_NV`(vxessfg) / `VFG_NV`(vvfg) / `FSR4`(vfsr4)。
 它们都接受平面 YUV（ 8..16bit）或 `RGBS` 输入，输出回到源格式与真实输出帧率（`fps_in * multi`）。
 YUV 直通，矩阵按帧属性（`_Matrix` 缺省回退 `_ColorSpace`）、量化范围按 `_Range`（缺省回退 `_ColorRange`）；
