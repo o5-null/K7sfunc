@@ -17,10 +17,16 @@ k7f_multi.lua —— 通用插帧倍数：一处设置，对所有补帧滤镜�
 
 注意：改倍数 = 整条滤镜重建（引擎重新初始化），不是逐帧实时生效。
 
+原生滤镜（vf_playkit）也用这里设定的倍数：菜单里只有一个条目，命令把 vf 规格发过来
+（`script-message-to k7f_multi native playkit:dll=…:proxy_dir=…`），由本脚本在创建滤镜时
+就把 multi 写进去——一次初始化，不会先建 6× 再改成目标值。没有设定过倍数时原生滤镜按
+2×（vf_playkit 自己的默认是 6×，太激进）。
+
 脚本消息：
   script-message-to k7f_multi set 4
   script-message-to k7f_multi clear
   script-message-to k7f_multi status
+  script-message-to k7f_multi native playkit:dll=vs-plugins/vdlssg.dll:proxy_dir=vs-plugins/dlss45
 ]]
 
 local mp = require 'mp'
@@ -73,6 +79,9 @@ local CAPS = {
 
 -- 原生 playkit 滤镜的 multi 上限（plugin 侧 engineMaxMulti(Dlss) = 6）
 local PLAYKIT_CAP = 6
+-- 原生滤镜没有"不指定"这个状态（multi 是 vf_playkit 的必填参数，默认 6×）：
+-- 没设过全局倍数时按 2×，避免"什么都没选却跑 6 倍"。
+local NATIVE_DEFAULT = 2
 
 -- 当前设定；nil = 不干预，各脚本用自己的默认值
 local multi = nil
@@ -175,14 +184,11 @@ local function rewrite(chain)
 					changed = true
 				end
 			elseif filter.name == 'playkit' then
-				local value = multi and math.min(multi, PLAYKIT_CAP) or nil
-				if value then
-					if tonumber(params.multi) ~= value then
-						params.multi = value
-						changed = true
-					end
-				elseif params.multi ~= nil then
-					params.multi = nil
+				-- 原生滤镜不认"不指定"：multi 是必填参数，缺省时 vf_playkit 自己会给 6×。
+				-- 所以这里始终写一个值，没设过全局倍数就按 NATIVE_DEFAULT（2×）。
+				local value = math.min(multi or NATIVE_DEFAULT, PLAYKIT_CAP)
+				if tonumber(params.multi) ~= value then
+					params.multi = value
 					changed = true
 				end
 			end
@@ -237,7 +243,7 @@ end
 -- vpy 报回来的实际倍数（上行 sidecar）用来在 OSD 里显示“实际”值
 local function describe()
 	if not multi then
-		return '倍数：不指定（各脚本默认）'
+		return ('倍数：不指定（vpy 用各自默认，原生滤镜 %d×）'):format(NATIVE_DEFAULT)
 	end
 	return ('倍数：%d×（已保存）'):format(multi)
 end
@@ -264,6 +270,36 @@ end)
 
 mp.register_script_message('status', function()
 	mp.osd_message(describe(), 3)
+end)
+
+-- 原生滤镜的套用：菜单命令把 vf 规格（playkit:param=value:…）发过来，这里连同当前
+-- 倍数一次写进 `vf set`，所以引擎只初始化一次。规格里不带 multi（带了也以这里为准）。
+mp.register_script_message('native', function(spec)
+	if type(spec) ~= 'string' or spec == '' then
+		mp.osd_message('原生滤镜：缺少 vf 规格', 2)
+		return
+	end
+
+	local value = math.min(multi or NATIVE_DEFAULT, PLAYKIT_CAP)
+	local name, rest = spec:match('^([^:]+):(.+)$')
+	local with_multi
+	if name then
+		with_multi = ('%s:multi=%d:%s'):format(name, value, rest)
+	else
+		-- 只有一个滤镜名，没有参数
+		with_multi = ('%s:multi=%d'):format(spec, value)
+	end
+
+	-- 与 push() 同样的守卫：观察者不要把我们这次的写入再套一遍
+	applying = true
+	local ok, err = pcall(mp.command, 'vf set ' .. with_multi)
+	applying = false
+	if not ok then
+		msg.warn('原生滤镜套用失败: ' .. tostring(err))
+		mp.osd_message('原生滤镜：套用失败（见日志）', 2)
+		return
+	end
+	mp.osd_message(('原生滤镜：%d×'):format(value), 2)
 end)
 
 -- 预设套用时补上同一个值：menu.conf / 键位都是 `vf set vapoursynth=…`，

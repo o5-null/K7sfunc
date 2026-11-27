@@ -540,9 +540,12 @@ end
 -- ###############
 
 local open_param_menu  -- 前向声明：选择完数值后要回到这里
+-- 外面主动关面板（script-message close）时不要又被 closed 回调拉起来
+local reopen_suppressed = false
 
 local function open_value_menu(p)
     local items, values, default_item = {}, {}, nil
+    local submitted = false
     local current = st()[p.key]
     for i, c in ipairs(p.choices) do
         items[i] = c[1] .. (c[2] == current and '  ●' or '')
@@ -555,14 +558,24 @@ local function open_value_menu(p)
         items = items,
         default_item = default_item,
         submit = function(index)
+            submitted = true
             st()[p.key] = values[index]
             apply(false)
+            mp.add_timeout(0.05, open_param_menu)
+        end,
+        -- Esc 关掉取值这一层时回到参数列表，而不是把整个面板收掉；
+        -- 提交也会走到 closed，所以先看 submitted 标记。
+        closed = function()
+            if submitted or reopen_suppressed then
+                return
+            end
             mp.add_timeout(0.05, open_param_menu)
         end,
     }
 end
 
 open_param_menu = function()
+    reopen_suppressed = false
     local items = {}
     for i, p in ipairs(params) do
         items[i] = ('%s：%s'):format(p.name, value_label(p))
@@ -608,7 +621,10 @@ end)
 mp.register_script_message('apply', function() apply(false) end)
 
 mp.register_script_message('menu', open_param_menu)
-mp.register_script_message('close', function() input.terminate() end)
+mp.register_script_message('close', function()
+    reopen_suppressed = true
+    input.terminate()
+end)
 
 mp.register_script_message('status', function()
     local text = status_text()
