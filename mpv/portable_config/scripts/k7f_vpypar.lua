@@ -1056,6 +1056,9 @@ local function set_value(item, value)
     end
 end
 
+-- 前置声明：菜单提交在 queue_apply 定义之前就要用到
+local queue_apply
+
 local function open_value_menu(item)
     local p = item.p
     local items, values, default_item = {}, {}, nil
@@ -1074,7 +1077,7 @@ local function open_value_menu(item)
         submit = function(index)
             submitted = true
             set_value(item, values[index])
-            apply(false)
+            queue_apply()
             mp.add_timeout(0.05, open_param_menu)
         end,
         -- Esc 关掉取值这一层时回到参数列表，而不是把整个面板收掉；
@@ -1187,13 +1190,37 @@ local function set_by_key(key, value)
     return false
 end
 
+-- 改一项就重建一次会对播放中的 vf 连做多次 destroy/init（VS 的 freeNode 回调是
+-- 它自己的线程异步跑的，紧邻的销毁容易撞 vf_vapoursynth 的 !in_node_active 断言）。
+-- 因此 set 只做去抖排队，连续 set（菜单预设一次发好几条）合并成一次重建；
+-- 显式 apply 立即冲刷掉排队中的重建。
+local apply_timer = nil
+
+local function cancel_pending_apply()
+    if apply_timer then
+        apply_timer:kill()
+        apply_timer = nil
+    end
+end
+
+function queue_apply(delay)
+    if apply_timer then return end -- 首次排队时间点不变，避免连续 set 无限延后
+    apply_timer = mp.add_timeout(delay or 0.12, function()
+        apply_timer = nil
+        apply(false)
+    end)
+end
+
 mp.register_script_message('set', function(key, value)
     if set_by_key(tostring(key):gsub('^global%.', ''), tostring(value)) then
-        apply(false)
+        queue_apply()
     end
 end)
 
-mp.register_script_message('apply', function() apply(false) end)
+mp.register_script_message('apply', function()
+    cancel_pending_apply()
+    apply(false)
+end)
 
 mp.register_script_message('menu', open_param_menu)
 mp.register_script_message('close', function()
