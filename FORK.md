@@ -32,7 +32,8 @@ mpv-playkit 不再从 PyPI 装 `k7sfunc`，而是按 commit 钉住本 fork 的�
 | `mpv/portable_config/vs/MEMC_*.vpy` | 新增：vs-framegen 的四个补帧脚本（DLSS-G / XeSS-FG / VFG / FSR4）；只留用户选项 + 一次 `k7f.FRAMEGEN_VPY(...)`（约 40 行） |
 | `mpv/portable_config/scripts/k7f_bridge.lua` | 新增：mpv 侧参数桥（拼 `user-data`、轮询报告、OSD 格式化） |
 | `mpv/portable_config/scripts/k7f_vpypar.lua` | 新增：OSD 调参前端（按滤镜链自动认引擎、参数候选值按引擎给出、改参后原地重建该条 vpy、显示“设置/实际”） |
-| `src/k7sfunc/mod_memc.py` + `mpv/portable_config/vs/MEMC_RIFE_AJI.vpy` | 仅追加：新增 `RIFE_AJI`（AnimeJaNai libaji 原生 RIFE；插件 `rife_aji` 在运行期按插件自身路径 dlopen `aji.dll`；插件放 VS 插件目录，aji 运行时放 `vs-plugins\aji\`；aji 路径只支持整数倍率） |
+| `mpv/portable_config/scripts/k7f_multi.lua` | 新增：倍数统一管理。把当前倍数写进每条 vpy 的 `user-data`；原生滤镜由 `native <vf>:<参数>` 消息一次性建链（倍率跟随倍数，未设定时 2×） |
+| `src/k7sfunc/mod_memc.py` + `mpv/portable_config/vs/MEMC_RIFE_AJI.vpy` | 仅追加：新增 `RIFE_AJI`（AnimeJaNai libaji 原生 RIFE；插件 `rife_aji` 在运行期按插件自身路径 dlopen `aji.dll`；插件放 VS 插件目录，aji 运行时放 `vs-plugins\aji\`；aji 路径只支持整数倍率）、`UPSCALE_AJI`（libaji 超分链）、`TEMPORAL_FIX_AJI`（temporalfix，1:1，可叠加在任意插帧/超分结果之后） |
 | `FORK.md` | 新增：本文件 |
 
 除 `mod_memc.py` 的纯追加外**不改上游已有模块的算法与参数**，对上游模块的改动只有 TensorRT 接入点这几处替换，上游更新时合并冲突面集中在 `__init__.py` 与这几个调用点。
@@ -47,7 +48,8 @@ mpv-playkit 不再从 PyPI 装 `k7sfunc`，而是按 commit 钉住本 fork 的�
 | `PLAYKIT_RUN(input, preset="auto", target_h=0, engine="auto", memc_engine="auto", memc_fps=60, fps_in=None, denoise_lv=3.0, deband_rth=48.0, gpu=0, gpu_m=1, gpu_t=2)` | 唯一入口，按 `preset` 分发 |
 | `PLAYKIT_AUTO(...)` | 只在 `input.height < target_h` 时超分 |
 | `PLAYKIT_UPSCALE(input, target_h=1440, engine="auto", ...)` | 超分并等比缩放到 `target_h` |
-| `PLAYKIT_MEMC(input, fps_out=60, engine="auto", fps_in=None, ...)` | 插帧到 `fps_out` |
+| `PLAYKIT_MEMC(input, fps_out=60, engine="auto", fps_in=None, temporal_fix="off", ...)` | 插帧到 `fps_out`；`temporal_fix=s1/s2/s3` 时在结果上叠一层时序修复 |
+| `PLAYKIT_TEMPORAL_FIX(input, model="s1", scene_threshold=0.150, gpu=0)` | 仅时序修复（1:1，尺寸/帧率不变），可单独叠加在任意滤镜之后 |
 | `PLAYKIT_DENOISE(input, strength=3.0, gpu=0)` | `NLM_STD` 降噪 |
 | `PLAYKIT_DEBAND(input, threshold=48.0)` | `DEBAND_STD` 去色带 |
 | `PLAYKIT_CLEAN(...)` | 去色带 + 降噪 |

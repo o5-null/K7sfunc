@@ -29,6 +29,7 @@ __all__ = [
 	"DRBA_DML", "DRBA_NV",
 	"RIFE_STD", "RIFE_COREML", "RIFE_DML", "RIFE_NV",
 	"DLSSG_NV", "XESSFG_NV", "VFG_NV", "FSR4", "RIFE_AJI",
+	"UPSCALE_AJI", "TEMPORAL_FIX_AJI",
 	"SVP_LQ", "SVP_HQ", "SVP_PRO"
 ]
 
@@ -1196,6 +1197,7 @@ def RIFE_AJI(
 	fps_den : int = 1,
 	sc_mode : typing.Literal[0, 1] = 1,
 	gpu : int = 0,
+	backend : str = "auto",
 ) -> vs.VideoNode :
 
 	func_name = "RIFE_AJI"
@@ -1209,6 +1211,7 @@ def RIFE_AJI(
 		raise vs.Error(f"模块 {func_name} 的子参数 fps_den 的值无效")
 	_validate_literal(func_name, "sc_mode", sc_mode, [0, 1])
 	_validate_numeric(func_name, "gpu", gpu, min_val=0, int_only=True)
+	_validate_literal(func_name, "backend", backend, _AJI_BACKENDS)
 
 	## aji 的 factor 只有整数，非整数倍率直接拒绝（不回退到 FRAMEGEN_HUB）
 	if fps_num % fps_den != 0 :
@@ -1285,9 +1288,174 @@ def RIFE_AJI(
 		factor=factor,
 		device=gpu,
 		scene_prop=1 if sc_mode == 1 else 0,
-		lib=os.path.join(aji_dir, "aji.dll"))
+		lib=os.path.join(aji_dir, "aji.dll"),
+		backend=backend)
 
 	## 插件保持输入 fps、帧数乘 factor，必须改回真实输出帧率，否则播放成慢动作
 	output = core.std.AssumeFPS(clip=fin, fpsnum=int(round(fps_in * factor * 1e6)), fpsden=1000000)
 
 	return output
+
+##################################################
+## 超分/时序 AnimeJaNai (libaji)
+##################################################
+
+## 发行包 models\ 里的 ONNX（不带扩展名）。短名只是调用方便，也可以直接写全名。
+_AJI_UPSCALE_MODELS = {
+	"hd_perf": "2x_AnimeJaNai_HD_V3.1_Performance_SPANF3_b5f48_unshuffle_fp16",
+	"hd_bal": "2x_AnimeJaNai_HD_V3.1_Balanced_SPANF3_b8f64_unshuffle_fp16",
+	"hd_perf_sharp": "2x_AnimeJaNai_HD_V3.1Sharp1_Performance_SPANF3_b5f48_unshuffle_fp16",
+	"hd_bal_sharp": "2x_AnimeJaNai_HD_V3.1Sharp1_Balanced_SPANF3_b8f64_unshuffle_fp16",
+	"sd": "2x_AnimeJaNai_SD_V1beta34_Compact_1x3xHxW_dyn-HW_strong_fp16_op21_dynamo",
+}
+
+_AJI_TEMPORAL_MODELS = {
+	"s1": "temporalfix_s1_v1.1_op18_fp16",
+	"s2": "temporalfix_s2_v1_op18_fp16",
+	"s3": "temporalfix_s3_v1_op18_fp16",
+}
+
+_AJI_BACKENDS = ["auto", "conf", "native", "cuda", "TensorRT", "TensorRT-RTX"]
+
+def _aji_model_name(func_name : str, param : str, model : str,
+					table : dict[str, str]) -> str :
+	"""短名 → ONNX 文件名；不在表里就原样当文件名用（方便换第三方模型）。"""
+
+	if not isinstance(model, str) or not model :
+		raise vs.Error(f"模块 {func_name} 的子参数 {param} 的值无效")
+	return table.get(model, model)
+
+def _aji_chain_dirs(func_name : str) -> tuple[str, str, str] :
+	"""(aji 运行时目录, conf 目录, models 目录)，缺运行时直接报错。"""
+
+	aji_dir = _aji_runtime_dir()
+	if not aji_dir :
+		raise vs.Error(f"模块 {func_name} 找不到 aji 运行时：请把 vsaji 的扁平包放到 <包根>\\vs-plugins\\aji\\，"
+						f"vsaji.dll 放到 Lib\\site-packages\\vapoursynth\\plugins\\")
+
+	conf_dir = os.path.join(aji_dir, "conf")
+	if not os.path.isdir(conf_dir) :
+		os.makedirs(conf_dir, exist_ok=True)
+
+	model_dir = os.path.join(aji_dir, "models")
+	if not os.path.isdir(model_dir) :
+		raise vs.Error(f"模块 {func_name} 找不到模型目录: {model_dir}（用 pack.ps1 -ModelsFrom 打包）")
+
+	return aji_dir, conf_dir, model_dir
+
+def _aji_write_conf(path : str, body : str) -> str :
+	"""conf 是运行期产物：内容没变就不重写，避免播放器多实例互相触发重载。"""
+
+	old_conf = None
+	if os.path.isfile(path) :
+		with open(path, "r", encoding="utf-8", newline="") as f :
+			old_conf = f.read()
+	if old_conf != body :
+		with open(path, "w", encoding="utf-8", newline="\n") as f :
+			f.write(body)
+	return path
+
+def _aji_chain_header(name : str, max_resolution : str) -> str :
+	"""三处 conf 共用的 [global] + [slot_1] 头；max_fps 给 241，60p 也够用。"""
+
+	return (
+		"[global]\n"
+		"config_version=3\n"
+		"backend=TensorRT\n"
+		"logging=no\n"
+		"\n"
+		"[slot_1]\n"
+		f"profile_name={name}\n"
+		f"chain_1_max_resolution={max_resolution}\n"
+		"chain_1_max_fps=241\n"
+	)
+
+def UPSCALE_AJI(
+	input : vs.VideoNode,
+	model : str = "hd_perf",
+	gpu : int = 0,
+	backend : str = "auto",
+) -> vs.VideoNode :
+	"""AnimeJaNai 超分（libaji 链，1 帧进 1 帧出，尺寸变大）。
+
+	model 用短名（hd_perf/hd_bal/hd_perf_sharp/hd_bal_sharp/sd）或完整 ONNX 名。
+	"""
+
+	func_name = "UPSCALE_AJI"
+	_validate_input_clip(func_name, input)
+	_validate_numeric(func_name, "gpu", gpu, min_val=0, int_only=True)
+	_validate_literal(func_name, "backend", backend, _AJI_BACKENDS)
+
+	onnx_name = _aji_model_name(func_name, "model", model, _AJI_UPSCALE_MODELS)
+
+	_aji_load_plugin()
+	_check_plugin(func_name, "vsaji")
+	aji_dir, conf_dir, model_dir = _aji_chain_dirs(func_name)
+
+	onnx_path = os.path.join(model_dir, onnx_name + ".onnx")
+	if not os.path.isfile(onnx_path) :
+		raise vs.Error(f"模块 {func_name} 所请求的模型缺失: {onnx_path}")
+
+	conf_body = _aji_chain_header("k7 Upscale", "4096x2304") + (
+		f"chain_1_model_1_name={onnx_name}\n"
+		"chain_1_model_1_resize_height_before_upscale=0\n"
+		"chain_1_model_1_resize_factor_before_upscale=100\n"
+	)
+	conf_path = _aji_write_conf(os.path.join(conf_dir, f"upscale_{onnx_name}.conf"), conf_body)
+
+	return core.vsaji.Upscale(
+		clip=input,
+		conf=conf_path,
+		model_dir=model_dir,
+		device=gpu,
+		fps=float(input.fps),
+		backend=backend,
+		lib=os.path.join(aji_dir, "aji.dll"))
+
+def TEMPORAL_FIX_AJI(
+	input : vs.VideoNode,
+	model : str = "s1",
+	scene_threshold : float = 0.150,
+	before_upscale : bool = False,
+	gpu : int = 0,
+	backend : str = "auto",
+) -> vs.VideoNode :
+	"""AnimeJaNai 时序模型（temporalfix）：1 帧进 1 帧出、尺寸不变。
+
+	可以单独用，也可以叠加在任意插帧/超分结果之后（输入输出帧率、尺寸都一致）。
+	model 用 s1/s2/s3 或完整 ONNX 名；s1 是 7 帧窗（r=3），代价见 vsaji 的 README。
+	"""
+
+	func_name = "TEMPORAL_FIX_AJI"
+	_validate_input_clip(func_name, input)
+	_validate_numeric(func_name, "scene_threshold", scene_threshold, min_val=0.0, max_val=1.0)
+	_validate_bool(func_name, "before_upscale", before_upscale)
+	_validate_numeric(func_name, "gpu", gpu, min_val=0, int_only=True)
+	_validate_literal(func_name, "backend", backend, _AJI_BACKENDS)
+
+	onnx_name = _aji_model_name(func_name, "model", model, _AJI_TEMPORAL_MODELS)
+
+	_aji_load_plugin()
+	_check_plugin(func_name, "vsaji")
+	aji_dir, conf_dir, model_dir = _aji_chain_dirs(func_name)
+
+	onnx_path = os.path.join(model_dir, onnx_name + ".onnx")
+	if not os.path.isfile(onnx_path) :
+		raise vs.Error(f"模块 {func_name} 所请求的模型缺失: {onnx_path}")
+
+	conf_body = _aji_chain_header("k7 TemporalFix", "4096x2304") + (
+		f"chain_1_temporal_fix_model={onnx_name}\n"
+		f"chain_1_temporal_fix_before_upscale={'yes' if before_upscale else 'no'}\n"
+		f"chain_1_temporal_fix_scene_threshold={scene_threshold:.3f}\n"
+	)
+	conf_path = _aji_write_conf(os.path.join(conf_dir, f"tfix_{onnx_name}.conf"), conf_body)
+
+	return core.vsaji.TemporalFix(
+		clip=input,
+		conf=conf_path,
+		model_dir=model_dir,
+		device=gpu,
+		fps=float(input.fps),
+		backend=backend,
+		lib=os.path.join(aji_dir, "aji.dll"))
+

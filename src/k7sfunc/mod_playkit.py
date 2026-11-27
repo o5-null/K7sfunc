@@ -24,7 +24,7 @@ from ._internal import (
 )
 
 from .mod_scale import ACNET_STD, ARTCNN_NV, CUGAN_NV, EDI_US_STD, NGU_HQ
-from .mod_memc import RIFE_AJI, RIFE_DML, RIFE_NV
+from .mod_memc import RIFE_AJI, RIFE_DML, RIFE_NV, TEMPORAL_FIX_AJI, UPSCALE_AJI
 from .mod_dbdn import NLM_STD
 from .mod_etc import DEBAND_STD
 
@@ -33,6 +33,7 @@ __all__ = [
 	"PLAYKIT_AUTO",
 	"PLAYKIT_UPSCALE",
 	"PLAYKIT_MEMC",
+	"PLAYKIT_TEMPORAL_FIX",
 	"PLAYKIT_DENOISE",
 	"PLAYKIT_DEBAND",
 	"PLAYKIT_CLEAN",
@@ -219,19 +220,29 @@ def PLAYKIT_MEMC(
 	fps_in : typing.Optional[float] = None,
 	gpu : int = 0,
 	gpu_t : int = 2,
+	temporal_fix : str = "off",
 ) -> vs.VideoNode :
-	"""插帧到 fps_out；engine="auto" 时按 PLAYKIT_MEMC_ORDER 降级。"""
+	"""插帧到 fps_out；engine="auto" 时按 PLAYKIT_MEMC_ORDER 降级。
+
+	temporal_fix 不是 off 时，在插帧结果上再叠一层 AnimeJaNai 时序修复（s1/s2/s3）。
+	"""
 
 	func_name = "PLAYKIT_MEMC"
 
 	_validate_input_clip(func_name, input)
 	_validate_numeric(func_name, "fps_out", fps_out, min_val=0)
 	_validate_literal(func_name, "engine", engine, ["auto"] + list(PLAYKIT_MEMC_ORDER))
+	_validate_literal(func_name, "temporal_fix", temporal_fix, ["off", "s1", "s2", "s3"])
 
 	fps_in = float(input.fps if fps_in is None else fps_in)
 
 	if fps_out <= 0 or fps_in <= 0 or fps_in >= fps_out :
 		return input
+
+	def _finish(clip : vs.VideoNode) -> vs.VideoNode :
+		if temporal_fix == "off" :
+			return clip
+		return PLAYKIT_TEMPORAL_FIX(clip, model=temporal_fix, gpu=gpu)
 
 	order = PLAYKIT_MEMC_ORDER if engine == "auto" else (engine,)
 	for name in order :
@@ -243,9 +254,32 @@ def PLAYKIT_MEMC(
 			_playkit_warn(f"插帧引擎 {name} 不可用: {exc}")
 			continue
 		_playkit_log(f"插帧引擎 {name} 生效: {fps_in:.3f} -> {clip.fps:.3f} fps")
-		return clip
+		return _finish(clip)
 
 	return input
+
+def PLAYKIT_TEMPORAL_FIX(
+	input : vs.VideoNode,
+	model : str = "s1",
+	scene_threshold : float = 0.150,
+	gpu : int = 0,
+) -> vs.VideoNode :
+	"""AnimeJaNai 时序修复（temporalfix），1 帧进 1 帧出。
+
+	可以单独叠加在任意滤镜之后；插件/模型不可用时原样返回。
+	"""
+
+	func_name = "PLAYKIT_TEMPORAL_FIX"
+
+	_validate_input_clip(func_name, input)
+	_validate_literal(func_name, "model", model, ["s1", "s2", "s3"])
+	_validate_numeric(func_name, "scene_threshold", scene_threshold, min_val=0.0, max_val=1.0)
+
+	try :
+		return TEMPORAL_FIX_AJI(input, model=model, scene_threshold=scene_threshold, gpu=gpu)
+	except Exception as exc :
+		_playkit_warn(f"时序修复不可用: {exc}")
+		return input
 
 ##################################################
 ## 其它 预设

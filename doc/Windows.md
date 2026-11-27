@@ -610,9 +610,60 @@ RIFE_AJI(input=?, model="4.14", ensemble=False, fps_in=23.976, fps_num=2, fps_de
 | <kbd>fps_den</kbd> | 整数 ||
 | <kbd>sc_mode</kbd> | `0`\|`1` | 场景切换检测： `0` 交给 aji 自己的阈值， `1` 用 VS 侧的 `_SceneChangeNext` 属性 |
 | <kbd>gpu</kbd> | 整数 | 指定显卡， `0` 为排序一号 |
+| <kbd>backend</kbd> | 字符串 | `auto` 按 TensorRT→TensorRT-RTX→纯 CUDA 降级；也可写 `native` / `TensorRT` / `TensorRT-RTX` |
 
 > [!NOTE]
 > `conf\rife_only_<模型号>.conf` 由模块自动生成，里面的 factor 只为启用 RIFE 链，真实倍率与相位由 VS 侧给；`sc_mode=0` 时额外写入 `scene_detect_threshold=0.150`。
+
+***
+
+### UPSCALE_AJI
+
+> 所需依赖：同 `RIFE_AJI`（`rife_aji.dll` + `<包根>\vs-plugins\aji\`），另有 `aji\models\*.onnx`
+
+```python
+UPSCALE_AJI(input=?, model="hd_perf", gpu=0, backend="auto")
+```
+
+用 AnimeJaNai 的 libaji 超分链，1 帧进 1 帧出、尺寸放大（模型多为 2x）。SPAN/SPANF3/Compact 这类降级 conv 网走 CUDA 原生内核，不需要 TensorRT engine。
+
+||||
+|:---|:---|:---|
+| <kbd>model</kbd> | 字符串 | 短名 `hd_perf` / `hd_bal` / `hd_perf_sharp` / `hd_bal_sharp` / `sd`，或完整 ONNX 名（不带 `.onnx`），对应 `aji\models\<model>.onnx` |
+| <kbd>gpu</kbd> | 整数 | 指定显卡， `0` 为排序一号 |
+| <kbd>backend</kbd> | 字符串 | `auto` 按 TensorRT→TensorRT-RTX→纯 CUDA 降级；也可写 `native` / `TensorRT` / `TensorRT-RTX` |
+
+实测 1080p→2160p 在 3080 上 38.9 ms/帧（`hd_perf`），720p→1440p 8.4 ms/帧。
+
+***
+
+### TEMPORAL_FIX_AJI
+
+> 所需依赖：同 `RIFE_AJI`，另有 `aji\models\temporalfix_*.onnx`
+
+```python
+TEMPORAL_FIX_AJI(input=?, model="s1", scene_threshold=0.150, before_upscale=False, gpu=0, backend="auto")
+```
+
+AnimeJaNai 的 temporalfix 时序模型（抑制闪噪/色带），1 帧进 1 帧出、尺寸与帧率都不变，因此可以单独用，也可以直接叠加在任意插帧/超分结果之后：
+
+```python
+clip = k7sfunc.RIFE_NV(clip, model=46, fps_in=23.976, fps_num=2, fps_den=1)
+clip = k7sfunc.TEMPORAL_FIX_AJI(clip, model="s1")
+```
+
+||||
+|:---|:---|:---|
+| <kbd>model</kbd> | 字符串 | `s1`（7 帧窗，r=3）/ `s2` / `s3`，或完整 ONNX 名 |
+| <kbd>scene_threshold</kbd> | 浮点 | 场景切换阈值，默认 `0.150`；切镜时不再跨镜头融合 |
+| <kbd>before_upscale</kbd> | `True`\|`False` | 链里同时有超分时，时序放在超分之前（源分辨率）还是之后，默认之后 |
+| <kbd>gpu</kbd> | 整数 | 指定显卡， `0` 为排序一号 |
+| <kbd>backend</kbd> | 字符串 | 同 `UPSCALE_AJI` |
+
+代价不小：3080 上 720p→1440p 从 8.4 涨到 30.2 ms/帧，1080p→2160p 从 38.9 涨到 189.1 ms/帧（输入每帧要额外读前后各 3 帧，GPU 同步占大头）。平坦画面近似恒等，只在纹理/运动边缘改变像素。
+
+> [!NOTE]
+> 这是 vsaji 的 `TemporalFix` 滤镜；`Rife` 不接受带时序模型的 conf（它没有模型目录，链会整条不激活），需要时序时一律走 `TEMPORAL_FIX_AJI` 或 `Upscale`。`conf\tfix_<模型>.conf` 由模块自动生成。
 
 ***
 
