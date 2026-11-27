@@ -1,7 +1,7 @@
 """_vpy_debug —— vpy 宿主层调试埋点（本 fork 专属）
 
-只在 `log` 打开时由 `mod_vpy.FRAMEGEN_VPY()` 调用；正常播放（log 关）时本模块
-一行都不会执行，补帧图也不会多套节点。
+由 `mod_vpy.FRAMEGEN_VPY()` 在 `log`（stderr 打点）或 `stats`（OSD 耗时行）
+打开时调用；两者都关时本模块一行都不会执行，补帧图也不会多套节点。
 
 两块：
 
@@ -47,7 +47,6 @@ __all__ = [
 	"attach_frame_probe",
 ]
 
-
 def dbg(message : str) -> None :
 	"""一行调试输出：stderr + flush（和插件的探针同一条流）。"""
 
@@ -81,25 +80,44 @@ class Stages :
 		self._parts.append((name, _ms(now - self._last)))
 		self._last = now
 
+	def _total(self) -> float :
+		"""构图总耗时 = 各阶段之和。
+
+		不能用 `perf_counter() - _start`：构图完成后 `Stages` 还会被
+		`_make_stats_writer` 反复取快照（OSD 每 0.5s 一次），墙钟会一直涨，
+		「合计」就会随播放时间虚增。
+		"""
+
+		return sum(value for _, value in self._parts)
+
 	def report(self) -> str :
 		"""一行拼好，例如 `resolve=0.4 resize=0.0 framegen=812.5 total=816.3ms`。"""
 
-		total = _ms(time.perf_counter() - self._start)
 		parts = " ".join(f"{name}={value:.1f}" for name, value in self._parts)
-		return f"{parts} total={total:.1f}ms"
+		return f"{parts} total={self._total():.1f}ms"
+
+	def snapshot(self) -> dict :
+		"""结构化版本（给 OSD/JSON 用）：各阶段毫秒数 + total。"""
+
+		return {
+			"parts" : {name : round(value, 1) for name, value in self._parts},
+			"total" : round(self._total(), 1),
+		}
 
 
 class _Timeline :
 	"""逐帧时间线：把"请求进入"和"帧就绪"按帧号配对，统计延迟与在飞帧数。"""
 
-	def __init__(self, tag : str) :
+	def __init__(self, tag : str, on_ready = None) :
 		self.tag = tag
+		self._on_ready = on_ready
 		self._lock = threading.Lock()
 		self._start = time.perf_counter()
 		self._pending = {}          # 帧号 -> (进入时刻, 进入线程号)
 		self._frames = 0
 		self._max_inflight = 0
 		self._latency = deque(maxlen = _WINDOW)
+		self._gaps = deque(maxlen = 60)      # 最近的就绪间隔，用来算实际吞吐
 		self._threads = {}          # 线程号 -> 完成的帧数
 		self._last_ready = None
 
@@ -122,7 +140,8 @@ class _Timeline :
 				return              # 埋点接上之前就在图里的帧，配不上，跳过
 			entered, _ = entry
 			latency = _ms(now - entered)
-			gap = 0.0 if self._last_ready is None else _ms(now - self._last_ready)
+			has_prev = self._last_ready is not None
+			gap = 0.0 if not has_prev else _ms(now - self._last_ready)
 			self._last_ready = now
 			self._frames += 1
 			self._latency.append(latency)
@@ -132,6 +151,8 @@ class _Timeline :
 			# 是"VS 侧靠并发掩盖等待"的直接证据
 			inflight = len(self._pending) + 1
 			elapsed = _ms(now - self._start)
+			if has_prev :
+				self._gaps.append(gap)
 			samples = list(self._latency)
 			threads = dict(self._threads)
 			max_inflight = self._max_inflight
@@ -143,6 +164,42 @@ class _Timeline :
 				f"间隔={gap:.2f}ms 同飞={inflight} 线程={tid}")
 		if print_summary :
 			dbg(_Timeline._summary(self.tag, frames, samples, threads, max_inflight, elapsed))
+
+		if self._on_ready is not None :
+			try :
+				self._on_ready(self.snapshot())
+			except Exception :
+				pass              # 统计输出同样不能影响播放
+
+	def snapshot(self) -> dict :
+		"""当前窗口的延迟统计（给 OSD 用）：帧数、平均/分位、在飞帧数。"""
+
+		with self._lock :
+			samples = list(self._latency)
+			gaps = list(self._gaps)
+			frames = self._frames
+			inflight = len(self._pending)
+			max_inflight = self._max_inflight
+			threads = len(self._threads)
+			elapsed = _ms(time.perf_counter() - self._start)
+			last_ready = self._last_ready
+
+		average = sum(samples) / len(samples) if samples else 0.0
+		# 吞吐用最近的帧间隔：总耗时/帧数会被暂停、缓冲的空档拖偏
+		pace = (sum(gaps) / len(gaps)) if gaps else 0.0
+		return {
+			"frames" : frames,
+			"elapsed" : round(elapsed / 1000.0, 2),
+			"avg" : round(average, 2),
+			"p50" : round(_pct(samples, 50), 2),
+			"p90" : round(_pct(samples, 90), 2),
+			"pace" : round(pace, 2),
+			"fps" : round(1000.0 / pace, 1) if pace > 0 else 0.0,
+			"inflight" : inflight,
+			"max_inflight" : max_inflight,
+			"threads" : threads,
+			"last_ready" : None if last_ready is None else round(_ms(last_ready - self._start), 1),
+		}
 
 	@staticmethod
 	def _summary(tag, frames, samples, threads, max_inflight, elapsed) -> str :
@@ -157,14 +214,16 @@ class _Timeline :
 			f"最大在飞={max_inflight} 线程={len(threads)} ({composition})")
 
 
-def attach_frame_probe(core, node, tag : str = "") :
-	"""给 `node` 套一层逐帧埋点，返回内容相同的节点；只在 log 打开时调用。
+def attach_frame_probe(core, node, tag : str = "", on_ready = None) :
+	"""给 `node` 套一层逐帧埋点，返回内容相同的节点；只在 log/stats 打开时调用。
 
 	内层 `FrameEval` 记请求时刻，外层以它为 `prop_src` 记就绪时刻；两层回调都
 	直接把输入节点交回去，不经 Python 碰像素、也不拷贝帧，所以只多两次空回调。
+
+	`on_ready(snapshot)` 在每帧就绪后调用（频率等于输出帧率），调用方自己节流。
 	"""
 
-	timeline = _Timeline(tag)
+	timeline = _Timeline(tag, on_ready = on_ready)
 
 	# 回调签名：不带 prop_src 时 VS 只传帧号，带上 prop_src 时再传帧本身；
 	# 这里统一写成带默认值的形式，两种调用方式都能接住

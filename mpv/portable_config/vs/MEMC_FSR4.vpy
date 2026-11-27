@@ -17,6 +17,7 @@ Gpu = None
 Camera = 0
 Pre_H = 0
 Log = False
+Stats = False
 ## 固定 2：FSR4 每次只生成一对相邻帧的中间帧，写别的值会被钳回 2
 ## 浮点，切镜阈值（两帧梯度方向直方图距离，与亮度无关），0 关闭
 ##   闪光/曝光跳变不会误判；快节奏素材可调到 0.15~0.2
@@ -25,6 +26,7 @@ Log = False
 ## 整数，>0 时按该速度（像素/帧）叠加"相机运动"到运动矢量，0 关闭
 ## 整数，>0 时先把源预缩到这个高度再补帧（4K 耗时吃紧时可填 1080）
 ## <True|False> 每帧向 stderr 打一行 evaluate 耗时
+## <True|False> 往 <本脚本>.k7f-stats.json 写耗时统计（OSD 常驻行读它，约 0.5s 一次）
 
 #### OSD 参数通道 ####
 # 前端脚本用 vf set 的 user-data 子参数传值，例如
@@ -36,6 +38,7 @@ out = k7f.FRAMEGEN_VPY(
 	video_in, __file__, engine="vfsr4", fps_in=container_fps,
 	user_data=globals().get("user_data"),
 	multi=Multi, scene=Scene, duplicate=Dup, camera=Camera, pre_h=Pre_H, gpu=Gpu, log=Log,
+	stats=Stats,
 )
 
 out.set_output()

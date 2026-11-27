@@ -17,6 +17,7 @@ Gpu = None
 Pre_H = 0
 Preset = "a"
 Log = False
+Stats = False
 ## <2|3|4|5|6> 整数，帧率倍数；每对相邻源帧插 Multi-1 张
 ## 浮点，切镜阈值（两帧梯度方向直方图距离，与亮度无关），0 关闭
 ##   闪光/曝光跳变不会误判；快节奏素材可调到 0.15~0.2
@@ -28,6 +29,7 @@ Log = False
 ##   c = FG Lite：每生成帧 GPU 时间约少 13%，静态画面与 a 逐像素相同，HUD/遮挡边缘略软
 ##   代价：插件会在装载代理前改写引擎包里的 <proxy_dir>\dlssg_sm86.ini，跑过 c 之后包里就停在 C
 ## <True|False> 每帧向 stderr 打一行 evaluate 耗时
+## <True|False> 往 <本脚本>.k7f-stats.json 写耗时统计（OSD 常驻行读它，约 0.5s 一次）
 
 #### OSD 参数通道 ####
 # 前端脚本用 vf set 的 user-data 子参数传值，例如
@@ -38,6 +40,7 @@ out = k7f.FRAMEGEN_VPY(
 	video_in, __file__, engine="vdlssg", fps_in=container_fps,
 	user_data=globals().get("user_data"),
 	multi=Multi, scene=Scene, duplicate=Dup, preset=Preset, pre_h=Pre_H, gpu=Gpu, log=Log,
+	stats=Stats,
 )
 
 out.set_output()

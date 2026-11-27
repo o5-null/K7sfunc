@@ -20,6 +20,7 @@ Dup = 0.005
 Gpu = None
 Pre_H = 0
 Log = False
+Stats = False
 ## 整数 2..6：输出倍数。插件为每个内插点开一条 CUDA lane（显存 ×(Multi-1)），
 ##   vfg 模型本身能连续内插，不需要"只填中点"；越界会被钳回 2..6
 ## 整数 0..2：模型档位，0 低 / 1 中（默认）/ 2 高。medium 已接近 high 的画质，
@@ -30,6 +31,7 @@ Log = False
 ## 整数，DXGI 显卡序号，0 为排序一号；None 用 0（本引擎不经过 sm86 代理，没有"跟随代理"这回事）
 ## 整数，>0 时先把源预缩到这个高度再补帧
 ## <True|False> 每帧向 stderr 打一行 evaluate 耗时
+## <True|False> 往 <本脚本>.k7f-stats.json 写耗时统计（OSD 常驻行读它，约 0.5s 一次）
 
 #### OSD 参数通道 ####
 # 前端脚本用 vf set 的 user-data 子参数传值，例如
@@ -40,6 +42,7 @@ out = k7f.FRAMEGEN_VPY(
 	video_in, __file__, engine="vvfg", fps_in=container_fps,
 	user_data=globals().get("user_data"),
 	multi=Multi, mode=Mode, scene=Scene, duplicate=Dup, pre_h=Pre_H, gpu=Gpu, log=Log,
+	stats=Stats,
 )
 
 out.set_output()

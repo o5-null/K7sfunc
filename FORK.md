@@ -22,8 +22,8 @@ mpv-playkit 不再从 PyPI 装 `k7sfunc`，而是按 commit 钉住本 fork 的�
 | `src/k7sfunc/mod_playkit.py` | 新增：预设层，把上游算子组合成开箱即用的滤镜链 |
 | `src/k7sfunc/mod_framegen.py` | 仅追加：新增帧生成补帧 `DLSSG_NV` / `XESSFG_NV` / `VFG_NV` / `FSR4` 与公用 helper `FRAMEGEN_HUB`（上游函数一行未改）；另把 NV 模块的 `core.trt` 依赖改为走 `_check_trt` / `_trt_backend` |
 | `src/k7sfunc/mod_scale.py` / `mod_dbdn.py` / `mod_mix.py` | 仅替换 TensorRT 接入点：`_check_plugin(..., "trt")` → `_check_trt`、`core.trt.Version()` → `_trt_plugin_dir`、`BackendV2.TRT(...)` → `_trt_backend(...)`，算法与参数一律未改 |
-| `src/k7sfunc/mod_vpy.py` | 新增：vpy 宿主层，`FRAMEGEN_VPY` 把 user_data/环境变量解析、插件定位、补帧主流程、上行报告收成一次调用（`VPY_LOAD_PLUGIN` 等助手可复用）；`log` 打开时另有构图阶段计时与 `[vpy-debug]` 逐帧探针（见 `_vpy_debug.py`） |
-| `src/k7sfunc/_vpy_debug.py` | 新增：调试埋点，只有 `log` 打开时才执行。`Stages` 记构图各阶段耗时，`attach_frame_probe` 用两层 `std.FrameEval` 逐帧记请求/就绪时刻、单帧延迟、同飞帧数与线程号（排查"VS 是否靠并发掩盖 GPU 等待"） |
+| `src/k7sfunc/mod_vpy.py` | 新增：vpy 宿主层，`FRAMEGEN_VPY` 把 user_data/环境变量解析、插件定位、补帧主流程、上行报告收成一次调用（`VPY_LOAD_PLUGIN` 等助手可复用）；`log` 打开时另有构图阶段计时与 `[vpy-debug]` 逐帧探针（见 `_vpy_debug.py`），`stats` 打开时把同一份计时写成 `<脚本>.k7f-stats.json` 供 OSD 行读取 |
+| `src/k7sfunc/_vpy_debug.py` | 新增：调试埋点，只有 `log` 或 `stats` 打开时才执行。`Stages` 记构图各阶段耗时，`attach_frame_probe` 用两层 `std.FrameEval` 逐帧记请求/就绪时刻、单帧延迟、同飞帧数与线程号（排查"VS 是否靠并发掩盖 GPU 等待"）；`stats` 模式下每帧就绪回调把快照交给写盘器（约 0.5s 一次） |
 | `src/k7sfunc/_internal.py` | 新增 `_check_trt` / `_trt_plugin_dir` / `_trt_backend` 三个助手，其余保持上游原样 |
 | `src/k7sfunc/_external/vsmlrt.py` | 修 API4 字符串路径（`get_plugins_path`）、补 `get_engine_path` 的 `int8`/`fp8` 实参、去掉 TRT-RTX 不认的 `-CUDNN` tactic、容忍验证推理失败 |
 | `src/k7sfunc/__init__.py` | 一行导出 + 版本号改为 `1.9.0+pre.9` |
@@ -140,6 +140,7 @@ out = k7f.FRAMEGEN_VPY(
 	video_in, __file__, engine="vdlssg", fps_in=container_fps,
 	user_data=globals().get("user_data"),
 	multi=Multi, scene=Scene, duplicate=Dup, preset=Preset, pre_h=Pre_H, gpu=Gpu, log=Log,
+	stats=Stats,
 )
 out.set_output()
 ```
@@ -156,7 +157,13 @@ out.set_output()
   （`MEMC_DLSSG_NV.vpy` / `MEMC_XESSFG_NV.vpy` / `MEMC_VFG_NV.vpy` / `MEMC_FSR4.vpy`），
   没有任何 vpy 在链上时用 `script-opts k7f_vpypar-script` 兜底（默认 DLSSG）。
   候选值与默认值跟各自 vpy 的用户选项对齐：DLSSG 有 `multi/preset`，XeSS-FG 只放行 `multi=2`，
-  VFG 有 `multi/mode`，FSR4 有 `camera`，`scene/duplicate/pre_h/gpu/log` 四个引擎共用。
+  VFG 有 `multi/mode`，FSR4 有 `camera`，`scene/duplicate/pre_h/gpu/log/stats` 四个引擎共用。
+- 耗时行：`stats` 打开时 `attach_frame_probe` 的每帧回调把快照交给写盘器，按
+  `STATS_INTERVAL`（0.5 s）原子写到同目录 `<脚本名>.k7f-stats.json`，内容为
+  `stages`（构图各阶段毫秒 + 合计）与 `live`（frames/avg/p50/p90/pace/fps/inflight/
+  max_inflight/threads）。`k7f_vpypar.lua` 每秒读一次、3 s 没有新数据就当已停，
+  用独立 `osd-overlay('ass-events')` 在 OSC 条上方画两行；`log` 与 `stats` 互相独立，
+  可只开 `stats`（不往 stderr 打点）。
 - 状态：`~~/_cache/k7f_vpypar.json` 按脚本名分桶（`{"memc_dlssg_nv.vpy":{...}}`），
   旧的扁平结构（`{"multi":3,...}`）读入时归给 DLSSG；`multi` 仍归 `k7f_multi.lua` 统一管，
   链上已有值时以链为准。

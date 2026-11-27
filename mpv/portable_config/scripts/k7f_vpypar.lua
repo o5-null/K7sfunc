@@ -15,10 +15,13 @@ mpv 会把它作为全局变量 user_data 注入脚本（默认空串；mpv 每�
 所以换预设后菜单会自动切到新引擎的参数表，不需要重配。每个引擎的键与范围必须和
 k7sfunc.mod_vpy 的 FRAMEGEN_VPY_OPTIONS / _FRAMEGEN_VALUE_SPECS 一致：
 
-  vdlssg  multi(2-6) preset scene duplicate pre_h gpu log
-  vxessfg multi(2)   scene duplicate pre_h gpu log
-  vvfg    multi(2-6) mode scene duplicate pre_h gpu log
-  vfsr4   camera scene duplicate pre_h gpu log        （固定 2×，没有 multi）
+  vdlssg  multi(2-6) preset scene duplicate pre_h gpu log stats
+  vxessfg multi(2)   scene duplicate pre_h gpu log stats
+  vvfg    multi(2-6) mode scene duplicate pre_h gpu log stats
+  vfsr4   camera scene duplicate pre_h gpu log stats        （固定 2×，没有 multi）
+
+“耗时显示”打开时 vpy 还会每 0.5s 写 `<脚本>.k7f-stats.json`（构图各阶段 + 逐帧延迟），
+本脚本读它在 OSC 条上方画两行；关掉后文件不再更新，行也就隐藏了。
 
 注意：改参 = 整条滤镜重建（引擎要重新初始化），不是逐帧实时；
 multi 会改变输出帧数，本来也只能重建。multi 仍以 k7f_multi 为准：链上已有值时
@@ -178,6 +181,11 @@ local function build_params(def)
     })
     add({
         key = 'log', name = '耗时日志', default = '0',
+        choices = { { '关', '0' }, { '开', '1' } },
+    })
+    add({
+        -- vpy 侧每 0.5s 写一份 <脚本>.k7f-stats.json，这里画在 OSC 上方
+        key = 'stats', name = '耗时显示', default = '0',
         choices = { { '关', '0' }, { '开', '1' } },
     })
 
@@ -535,6 +543,124 @@ local function status_text()
     return table.concat(lines, '\n')
 end
 
+-- ##################
+-- 耗时行（OSD 常驻）--
+-- ##################
+
+-- vpy 在“耗时显示”打开时按 STATS_INTERVAL（0.5s）写这个文件：
+--   <脚本>.k7f-stats.json = {ts, engine, title, multi, input, output, stages, live}
+-- stages 是构图各阶段耗时（一次性），live 是逐帧延迟统计（滚动窗口）。
+-- 这里只负责读文件、排版、钉在 OSC 条上方；没有独立开关时完全不动文件。
+local STATS_SUFFIX = '.k7f-stats.json'
+-- 报告超过这么久没更新就认为补帧停了（暂停时保留最后一次，不闪）
+local STATS_STALE = 3
+local STATS_STAGE_LABELS = {
+    resolve = '解析', resize = '预缩', load = '加载', prep = '准备',
+    framegen = '建引擎', fps = '帧率', publish = '上报', probe = '探针',
+}
+local STATS_STAGE_ORDER = { 'resolve', 'resize', 'load', 'prep', 'framegen', 'fps', 'publish', 'probe' }
+
+local stats_timer = nil
+local stats_overlay = nil
+local stats_shown = false
+local stats_geo = { w = 0, h = 0, bottom = 0 }
+
+-- OSD 坐标系与 uosc 的底栏高度：uosc 把底栏占比写到 user-data/osc/margins
+local function stats_geometry()
+    local dims = mp.get_property_native('osd-dimensions') or {}
+    local margins = mp.get_property_native('user-data/osc/margins') or {}
+    stats_geo.w = tonumber(dims.w) or 0
+    stats_geo.h = tonumber(dims.h) or 0
+    stats_geo.bottom = tonumber(margins.b) or 0
+    return stats_geo.w > 0 and stats_geo.h > 0
+end
+
+local function stats_enabled()
+    return st().stats == '1'
+end
+
+local function stats_text(data)
+    local lines = {}
+    local live = data.live
+    if live and (tonumber(live.frames) or 0) > 0 then
+        lines[#lines + 1] = ('%s %s× · 单帧 %.2fms p90 %.2f · 同飞 %d · %dfps'):format(
+            data.title or def.title,
+            tostring(data.multi or '?'),
+            tonumber(live.avg) or 0,
+            tonumber(live.p90) or 0,
+            tonumber(live.inflight) or 0,
+            math.floor((tonumber(live.fps) or 0) + 0.5))
+    end
+    local stages = data.stages
+    if stages and stages.parts then
+        local parts = {}
+        for _, key in ipairs(STATS_STAGE_ORDER) do
+            local value = tonumber(stages.parts[key])
+            if value then
+                parts[#parts + 1] = ('%s %.1f'):format(STATS_STAGE_LABELS[key] or key, value)
+            end
+        end
+        if #parts > 0 then
+            lines[#lines + 1] = ('构图 %s ms（合计 %.0f）'):format(
+                table.concat(parts, ' · '), tonumber(stages.total) or 0)
+        end
+    end
+    if #lines == 0 then return nil end
+    return table.concat(lines, '\\N')
+end
+
+local function stats_hide()
+    if stats_overlay and stats_shown then
+        stats_overlay:remove()
+        stats_shown = false
+    end
+end
+
+local function stats_show(text)
+    if not stats_geometry() then return end
+    if not stats_overlay then
+        stats_overlay = mp.create_osd_overlay('ass-events')
+    end
+    local w, h = stats_geo.w, stats_geo.h
+    -- 底栏占比是相对整屏的：文字底边放在底栏上沿再抬一点
+    local base = h - math.floor(h * stats_geo.bottom) - math.floor(h * 0.010)
+    local size = math.max(16, math.floor(h * 0.020))
+    stats_overlay.res_x = w
+    stats_overlay.res_y = h
+    stats_overlay.data = ('{\\an2\\pos(%d,%d)\\fs%d\\bord2\\shad0\\1c&HFFFFFF&\\3c&H000000&}%s')
+        :format(math.floor(w / 2), base, size, text)
+    stats_overlay:update()
+    stats_shown = true
+end
+
+local function refresh_stats()
+    if not stats_enabled() then
+        stats_hide()
+        return
+    end
+
+    local data = B.read_json(resolve_path(target_script) .. STATS_SUFFIX)
+    if not data or tostring(data.engine or '') ~= (def and def.engine or '') then
+        stats_hide()
+        return
+    end
+
+    -- 暂停时保留最后一次统计（没有新帧不等于没有数据）；播放中过期说明补帧停了
+    local stale = os.time() - (tonumber(data.ts) or 0) > STATS_STALE
+    if stale and not mp.get_property_native('pause') then
+        stats_hide()
+        return
+    end
+
+    local text = stats_text(data)
+    if not text then
+        stats_hide()
+        return
+    end
+    msg.trace(('耗时行：%s'):format((text:gsub('\\N', ' | '))))
+    stats_show(text)
+end
+
 -- ###############
 -- OSD 菜单本体 --
 -- ###############
@@ -699,5 +825,15 @@ end
 
 load_state()
 start_watch()
+
+-- 耗时行：1s 读一次统计文件；窗口尺寸 / uosc 底栏高度变化时重新定位
+stats_timer = mp.add_periodic_timer(1.0, refresh_stats)
+mp.observe_property('osd-dimensions', 'none', function()
+    if stats_shown then refresh_stats() end
+end)
+mp.observe_property('user-data/osc/margins', 'none', function()
+    if stats_shown then refresh_stats() end
+end)
+
 msg.verbose(('已加载 %s，当前：%s（报告：%s）')
     :format(def.title, describe(), tostring(watcher and '监看中' or '未启用')))

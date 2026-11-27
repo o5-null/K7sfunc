@@ -9,7 +9,7 @@
 
 约定（与 k7f_vpypar.lua 的参数表一致，改键名要两边一起改）：
     优先级  字面量 < 环境变量 `<NS>_<KEY>` < user_data
-    键名    multi / scene / camera / preset / pre_h / gpu / log
+    键名    multi / scene / camera / preset / pre_h / gpu / log / stats
 
 本模块不抛"参数非法"以外的异常：上行报告写失败只影响 OSD，不能打断播放。
 """
@@ -30,6 +30,7 @@ __all__ = [
 	"VPY_AS_BOOL",
 	"VPY_GET",
 	"VPY_SIDECAR_PATH",
+	"VPY_STATS_PATH",
 	"VPY_CLIP_INFO",
 	"VPY_PUBLISH",
 	"VPY_LOAD_PLUGIN",
@@ -42,12 +43,18 @@ SCHEMA_VERSION = 1
 # 报告文件后缀：与 vpy 同目录、同名，例如 MEMC_DLSSG_NV.vpy.k7f.json
 SIDECAR_SUFFIX = ".k7f.json"
 
+# 耗时统计文件后缀（OSD 常驻行用）：只在 stats 打开时每秒刷新一次
+STATS_SUFFIX = ".k7f-stats.json"
+
+# 耗时文件的刷新间隔（秒）：OSD 上 0.5s 一跳已经足够跟手，又不至于频繁落盘
+STATS_INTERVAL = 0.5
+
 # 每个引擎在 vpy 里暴露哪些参数通道（决定 env / user_data 认哪些键、报告里有哪些字段）
 FRAMEGEN_VPY_OPTIONS = {
-	"vdlssg" : ("multi", "scene", "duplicate", "preset", "pre_h", "gpu", "log"),
-	"vxessfg" : ("multi", "scene", "duplicate", "pre_h", "gpu", "log"),
-	"vvfg" : ("multi", "mode", "scene", "duplicate", "pre_h", "gpu", "log"),
-	"vfsr4" : ("scene", "duplicate", "camera", "pre_h", "gpu", "log"),
+	"vdlssg" : ("multi", "scene", "duplicate", "preset", "pre_h", "gpu", "log", "stats"),
+	"vxessfg" : ("multi", "scene", "duplicate", "pre_h", "gpu", "log", "stats"),
+	"vvfg" : ("multi", "mode", "scene", "duplicate", "pre_h", "gpu", "log", "stats"),
+	"vfsr4" : ("scene", "duplicate", "camera", "pre_h", "gpu", "log", "stats"),
 }
 
 ## 插件构造函数额外接受的参数（vdlssg 的模型档、vvfg 的模型档位、vfsr4 的相机运动）
@@ -86,6 +93,7 @@ _FRAMEGEN_VALUE_SPECS = {
 	"camera" : (int, 0, None),
 	"pre_h" : (int, 0, None),
 	"log" : (bool, None, None),
+	"stats" : (bool, None, None),
 	"preset" : (str, None, None),
 	"gpu" : ("gpu", 0, None),
 }
@@ -238,6 +246,11 @@ def VPY_SIDECAR_PATH(script_file) -> str :
 	"""报告文件的绝对路径：与脚本同目录，避免传绝对路径时被 vf 的 `:` 截断。"""
 
 	return os.path.abspath(os.fspath(script_file)) + SIDECAR_SUFFIX
+
+def VPY_STATS_PATH(script_file) -> str :
+	"""耗时统计文件路径（mpv 侧 k7f_vpypar.lua 轮询后画 OSD 常驻行）。"""
+
+	return os.path.abspath(os.fspath(script_file)) + STATS_SUFFIX
 
 def VPY_CLIP_INFO(clip, fps = None) :
 	"""从 VS clip 取宽高与帧率；拿不到就返回 None（不抛异常）。
@@ -454,6 +467,7 @@ def FRAMEGEN_VPY(
 	pre_h : int = 0,
 	gpu : typing.Optional[int] = None,
 	log : bool = False,
+	stats : bool = False,
 ) -> vs.VideoNode :
 	"""vs-framegen 系列的 vpy 主流程：参数解析 + 插件定位 + 补帧 + 上行报告。
 
@@ -476,10 +490,13 @@ def FRAMEGEN_VPY(
 		"multi" : multi, "mode" : mode, "scene" : scene, "duplicate" : duplicate,
 		"camera" : camera,
 		"preset" : preset, "pre_h" : pre_h, "gpu" : gpu, "log" : bool(log),
+		"stats" : bool(stats),
 	})
 
-	# 调试埋点：只有 log 打开时才建计时器/套探针，正常播放这两行什么都不做
-	stages = _vpy_debug.Stages() if values["log"] else None
+	# 埋点：log 往 stderr 打、stats 往 JSON 写（OSD 常驻行用）；两者都关时什么都不建
+	debug = bool(values["log"])
+	stats_on = bool(values["stats"])
+	stages = _vpy_debug.Stages() if (debug or stats_on) else None
 	if stages :
 		stages.mark("resolve")
 
@@ -542,11 +559,18 @@ def FRAMEGEN_VPY(
 		stages.mark("publish")
 
 	if stages :
-		_vpy_debug.dbg(_debug_config(engine, values, fps, input, out))
+		if debug :
+			_vpy_debug.dbg(_debug_config(engine, values, fps, input, out))
 		# 逐帧探针：请求/就绪时间、单帧延迟、在飞帧数、线程号（见 _vpy_debug）
-		out = _vpy_debug.attach_frame_probe(core, out, tag = engine)
+		writer = None
+		if stats_on :
+			writer = _make_stats_writer(script_file, engine, values, fps, input, out, stages)
+		out = _vpy_debug.attach_frame_probe(core, out, tag = engine, on_ready = writer)
 		stages.mark("probe")
-		_vpy_debug.dbg(f"stage {stages.report()}")
+		if debug :
+			_vpy_debug.dbg(f"stage {stages.report()}")
+		if writer :
+			writer(None)      # 构图完成后先写一份，OSD 打开不必等第一帧
 
 	return out
 
@@ -555,7 +579,8 @@ def _debug_config(engine : str, values : dict, fps, video_in, out) -> str :
 	"""调试模式下的一行构图摘要：实际参数 + 进出尺寸/帧率，方便和跑分表对齐。"""
 
 	params = " ".join(
-		f"{key}={values[key]}" for key in FRAMEGEN_VPY_OPTIONS[engine] if key != "log"
+		f"{key}={values[key]}" for key in FRAMEGEN_VPY_OPTIONS[engine]
+		if key not in ("log", "stats")
 	)
 	in_info = VPY_CLIP_INFO(video_in, fps = fps) or {}
 	out_info = VPY_CLIP_INFO(out) or {}
@@ -592,6 +617,7 @@ def _publish_framegen(script_file, engine : str, values : dict, fps, video_in, o
 	params["gpu"] = "auto" if values["gpu"] is None else values["gpu"]
 	params["pre_h"] = values["pre_h"]
 	params["log"] = values["log"]
+	params["stats"] = values["stats"]
 
 	VPY_PUBLISH(
 		script_file,
@@ -602,3 +628,45 @@ def _publish_framegen(script_file, engine : str, values : dict, fps, video_in, o
 		in_info=VPY_CLIP_INFO(video_in, fps=fps),
 		out_info=VPY_CLIP_INFO(out),
 	)
+
+def _make_stats_writer(script_file, engine : str, values : dict, fps, video_in, out, stages) :
+	"""构造耗时写入器：`live` 为 None 时只落构图阶段，否则带上逐帧统计。
+
+	mpv 侧 k7f_vpypar.lua 以 1s 间隔读这个文件，画在 OSC 上方；
+	写失败只影响那一行显示，不影响播放（`_write_atomic` 会提示一次）。
+	"""
+
+	path = VPY_STATS_PATH(script_file)
+	meta = {
+		"v" : SCHEMA_VERSION,
+		"script" : os.path.basename(os.fspath(script_file)),
+		"engine" : engine,
+		"title" : _FRAMEGEN_TITLES.get(engine, engine),
+		"pid" : os.getpid(),
+		"multi" : values.get("multi"),
+		"input" : VPY_CLIP_INFO(video_in, fps = fps),
+		"output" : VPY_CLIP_INFO(out),
+	}
+	# 帧回调在 VS 的工作线程上，节流状态用普通闭包变量即可（同一进程内单写者）
+	last = [0.0]
+
+	def write(live) :
+		now = time.perf_counter()
+		if live is not None and now - last[0] < STATS_INTERVAL :
+			return
+		last[0] = now
+
+		payload = dict(meta)
+		payload["ts"] = round(time.time(), 3)
+		if stages is not None :
+			payload["stages"] = stages.snapshot()
+		if live is not None :
+			payload["live"] = live
+
+		try :
+			text = json.dumps(payload, ensure_ascii = False, separators = (",", ":"))
+		except Exception :
+			return              # 统计文件丢了无所谓，绝不能影响播放
+		_write_atomic(path, text)
+
+	return write
