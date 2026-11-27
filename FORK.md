@@ -31,7 +31,7 @@ mpv-playkit 不再从 PyPI 装 `k7sfunc`，而是按 commit 钉住本 fork 的�
 | `mpv/portable_config/script-opts/k7f_playkit.conf` | 新增：前端配置 |
 | `mpv/portable_config/vs/MEMC_*.vpy` | 新增：vs-framegen 的四个补帧脚本（DLSS-G / XeSS-FG / VFG / FSR4）；只留用户选项 + 一次 `k7f.FRAMEGEN_VPY(...)`（约 40 行） |
 | `mpv/portable_config/scripts/k7f_bridge.lua` | 新增：mpv 侧参数桥（拼 `user-data`、轮询报告、OSD 格式化） |
-| `mpv/portable_config/scripts/k7f_vpypar.lua` | 新增：OSD 调参前端（重建滤镜 + 显示“设置/实际”） |
+| `mpv/portable_config/scripts/k7f_vpypar.lua` | 新增：OSD 调参前端（按滤镜链自动认引擎、参数候选值按引擎给出、改参后原地重建该条 vpy、显示“设置/实际”） |
 | `src/k7sfunc/mod_memc.py` + `mpv/portable_config/vs/MEMC_RIFE_AJI.vpy` | 仅追加：新增 `RIFE_AJI`（AnimeJaNai libaji 原生 RIFE；插件 `rife_aji` 在运行期按插件自身路径 dlopen `aji.dll`；插件放 VS 插件目录，aji 运行时放 `vs-plugins\aji\`；aji 路径只支持整数倍率） |
 | `FORK.md` | 新增：本文件 |
 
@@ -149,6 +149,16 @@ out.set_output()
   包根 `vs-plugins/` → 脚本旁 `../`、`../../` → 开发树 `vs-dlssg/bin/` 的顺序 `LoadPlugin`。
 - 上行：脚本末尾 `VPY_PUBLISH()` 把实际参数写到同目录 `<脚本名>.k7f.json`（原子替换，
   异常全部吞掉）；`k7f_vpypar.lua` 每 0.5 s 轮询，`status` 消息显示“设置/实际”两行。
+- 前端多引擎：`k7f_vpypar.lua` 按 `vf` 链里 `vapoursynth` 的 `params.file` 文件名认引擎
+  （`MEMC_DLSSG_NV.vpy` / `MEMC_XESSFG_NV.vpy` / `MEMC_VFG_NV.vpy` / `MEMC_FSR4.vpy`），
+  没有任何 vpy 在链上时用 `script-opts k7f_vpypar-script` 兜底（默认 DLSSG）。
+  候选值与默认值跟各自 vpy 的用户选项对齐：DLSSG 有 `multi/preset`，XeSS-FG 只放行 `multi=2`，
+  VFG 有 `multi/mode`，FSR4 有 `camera`，`scene/duplicate/pre_h/gpu/log` 四个引擎共用。
+- 状态：`~~/_cache/k7f_vpypar.json` 按脚本名分桶（`{"memc_dlssg_nv.vpy":{...}}`），
+  旧的扁平结构（`{"multi":3,...}`）读入时归给 DLSSG；`multi` 仍归 `k7f_multi.lua` 统一管，
+  链上已有值时以链为准。
+- 认领：按 `params.file` 匹配而不看标签，所以菜单里 `vf set vapoursynth="~~/vs/..."` 挂出的
+  无标签滤镜也会被接管；重建后统一带 `label`，其它滤镜条目与顺序保持不变。
 - 代价：上行只是状态快照，最多 0.5 s 延迟；改参仍然要重建滤镜、重新初始化引擎。
 - `MEMC_RIFE_AJI.vpy` 与 `k7f_playkit.lua` 生成的临时脚本暂未接 `VPY_PUBLISH()`。
 
