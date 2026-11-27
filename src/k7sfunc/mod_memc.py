@@ -1113,14 +1113,14 @@ def _aji_pack_root() -> str :
 										os.pardir, os.pardir, os.pardir))
 
 def _aji_load_plugin() -> None :
-	"""兜底加载 rife_aji.dll（正常情况由 VapourSynth 自动扫描插件目录）。
+	"""兜底加载 vsaji.dll（正常情况由 VapourSynth 自动扫描插件目录）。
 
 	按 K7 的依赖规范，插件走 `Lib\\site-packages\\vapoursynth\\plugins\\`，进程
 	启动时自动 LoadPlugin；这里只是为"手动解压到 vs-plugins"与 PLAYKIT 预设
 	（纯 Python，没有 vpy 脚本层可写 LoadPlugin）留一条路。环境变量 AJI_PLUGIN
 	可指定具体 DLL，便于换版本调试。
 	"""
-	if hasattr(core, "rife_aji") :
+	if hasattr(core, "vsaji") :
 		return
 
 	root = _aji_pack_root()
@@ -1129,8 +1129,8 @@ def _aji_load_plugin() -> None :
 		cands.append(os.environ["AJI_PLUGIN"])
 	cands += [
 		## 非规范布局：插件与运行时都解压在 vs-plugins 下
-		os.path.join(root, "vs-plugins", "rife_aji.dll"),
-		os.path.join(root, "vs-plugins", "aji", "rife_aji.dll"),
+		os.path.join(root, "vs-plugins", "vsaji.dll"),
+		os.path.join(root, "vs-plugins", "aji", "vsaji.dll"),
 	]
 	for path in cands :
 		if not os.path.isfile(path) :
@@ -1139,7 +1139,7 @@ def _aji_load_plugin() -> None :
 			core.std.LoadPlugin(os.path.abspath(path))
 		except Exception :
 			continue
-		if hasattr(core, "rife_aji") :
+		if hasattr(core, "vsaji") :
 			return
 
 def _aji_version_paths() -> tuple[str, str] :
@@ -1151,7 +1151,7 @@ def _aji_version_paths() -> tuple[str, str] :
 	`Version: no return value(s) named ...`，属于上游噪声，不影响取值。
 	"""
 	try :
-		info = core.rife_aji.Version()
+		info = core.vsaji.Version()
 	except Exception :
 		return "", ""
 	def _text(key : str) -> str :
@@ -1215,12 +1215,12 @@ def RIFE_AJI(
 		raise vs.Error(f"模块 {func_name} 的子参数 fps_den 无法整除 fps_num：aji 路径只支持整数倍率")
 
 	_aji_load_plugin()
-	_check_plugin(func_name, "rife_aji")
+	_check_plugin(func_name, "vsaji")
 
 	aji_dir = _aji_runtime_dir()
 	if not aji_dir :
 		raise vs.Error(f"模块 {func_name} 找不到 aji 运行时：请把 vsaji 的扁平包放到 <包根>\\vs-plugins\\aji\\，"
-						f"rife_aji.dll 放到 Lib\\site-packages\\vapoursynth\\plugins\\")
+						f"vsaji.dll 放到 Lib\\site-packages\\vapoursynth\\plugins\\")
 
 	mdl_dir = os.path.join(aji_dir, "rife")
 	conf_dir = os.path.join(aji_dir, "conf")
@@ -1279,7 +1279,7 @@ def RIFE_AJI(
 		cut0 = input
 
 	factor = fps_num // fps_den
-	fin = core.rife_aji.Rife(cut0,
+	fin = core.vsaji.Rife(cut0,
 		conf=conf_path,
 		rife_model_dir=mdl_dir,
 		factor=factor,
