@@ -113,6 +113,7 @@ def RIFE_AJI(
 	fps_num : int = 2,
 	fps_den : int = 1,
 	sc_mode : typing.Literal[0, 1] = 1,
+	scene_threshold : float = 0.150,
 	gpu : int = 0,
 	backend : str = "auto",
 ) -> vs.VideoNode :
@@ -127,6 +128,7 @@ def RIFE_AJI(
 	if not isinstance(fps_den, int) or fps_den >= fps_num or fps_num/fps_den <= 1 :
 		raise vs.Error(f"模块 {func_name} 的子参数 fps_den 的值无效")
 	_validate_literal(func_name, "sc_mode", sc_mode, [0, 1])
+	_validate_numeric(func_name, "scene_threshold", scene_threshold, min_val=0.0, max_val=1.0)
 	_validate_numeric(func_name, "gpu", gpu, min_val=0, int_only=True)
 	_validate_literal(func_name, "backend", backend, _AJI_BACKENDS)
 
@@ -181,7 +183,7 @@ def RIFE_AJI(
 	)
 	## sc_mode 0 交给 aji 自己的阈值检测；sc_mode 1 用 VS 侧属性，这里不写阈值
 	if sc_mode == 0 :
-		conf_body = conf_body + "chain_1_rife_scene_detect_threshold=0.150\n"
+		conf_body = conf_body + f"chain_1_rife_scene_detect_threshold={scene_threshold:.3f}\n"
 
 	conf_path = os.path.join(conf_dir, f"rife_only_{code}.conf")
 	old_conf = None

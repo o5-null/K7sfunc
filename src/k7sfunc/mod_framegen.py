@@ -26,6 +26,9 @@ FRAMEGEN_ENGINES = {
 	"vxessfg" : {"name" : "XeSS-FG", "multi" : [2]},
 	"vvfg" : {"name" : "VFG", "multi" : [2, 3, 4, 5, 6]},
 	"vfsr4" : {"name" : "FSR4", "multi" : [2]},
+	# 这里只登记倍率范围，给 mod_vpy 的参数解析用；aji 不走 FRAMEGEN_HUB
+	# （插件函数是 vsaji.Rife，宿主由 mod_aji.RIFE_AJI 负责）
+	"vaji" : {"name" : "RIFE-AJI", "multi" : [2, 3, 4, 5, 6]},
 }
 
 def FRAMEGEN_HUB(

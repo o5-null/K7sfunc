@@ -105,6 +105,27 @@ class Stages :
 		}
 
 
+def _prop_value(props, key : str) :
+	"""读帧属性；没有这个键、或读失败都返回 None（vs 的 FrameProps 支持 in/get）。"""
+
+	if props is None :
+		return None
+	try :
+		return props[key]
+	except Exception :
+		return None
+
+
+def _cut_flag(props) -> bool :
+	"""这一帧是不是补帧插件标的切镜帧（`_DLSSGSceneCut != 0`）。"""
+
+	value = _prop_value(props, "_DLSSGSceneCut")
+	try :
+		return bool(int(value))
+	except Exception :
+		return False
+
+
 class _Timeline :
 	"""逐帧时间线：把"请求进入"和"帧就绪"按帧号配对，统计延迟与在飞帧数。"""
 
@@ -120,6 +141,12 @@ class _Timeline :
 		self._gaps = deque(maxlen = 60)      # 最近的就绪间隔，用来算实际吞吐
 		self._threads = {}          # 线程号 -> 完成的帧数
 		self._last_ready = None
+		# 切镜：插件在输出帧上写 `_DLSSGSceneCut`（见 vs-dlssg/frame_gen.cpp 的
+		# markFrame）。同一次切镜会连续标记同一组的几个中间帧（slot 1..multi-1），
+		# 所以按组首帧计数，一次切镜只算一次。
+		self._cuts = 0
+		self._cut_at = None         # 最近一次切镜的就绪时刻（perf_counter）
+		self._cut_frame = None      # 最近一次计数的帧号（没有 slot 属性时用来合并连续帧）
 
 	def enter(self, n : int) -> None :
 		now = time.perf_counter()
@@ -129,9 +156,15 @@ class _Timeline :
 			if inflight > self._max_inflight :
 				self._max_inflight = inflight
 
-	def leave(self, n : int) -> None :
-		"""帧就绪：配对进入时刻，算出这一帧的延迟；输出放在锁外做。"""
+	def leave(self, n : int, props = None) -> None :
+		"""帧就绪：配对进入时刻，算出这一帧的延迟；输出放在锁外做。
 
+		`props` 是这一帧的帧属性（`frame.props`），带补帧插件的
+		`_DLSSGSceneCut`/`_DLSSGMultiFrameIndex` 时顺便数切镜。
+		"""
+
+		cut = _cut_flag(props)
+		slot = _prop_value(props, "_DLSSGMultiFrameIndex")
 		now = time.perf_counter()
 		tid = threading.get_ident()
 		with self._lock :
@@ -146,6 +179,8 @@ class _Timeline :
 			self._frames += 1
 			self._latency.append(latency)
 			self._threads[tid] = self._threads.get(tid, 0) + 1
+			if cut :
+				self._note_cut(n, slot, now)
 			frames = self._frames
 			# 这一帧结束时仍在飞的帧数（加它自己）；≥2 说明这一帧确实和别的帧并行，
 			# 是"VS 侧靠并发掩盖等待"的直接证据
@@ -171,8 +206,26 @@ class _Timeline :
 			except Exception :
 				pass              # 统计输出同样不能影响播放
 
+	def _note_cut(self, n : int, slot, now : float) -> None :
+		"""记一次切镜。调用时已持有锁。
+
+		插件对一次切镜会标记整组的中间帧（slot 1..multi-1），只数组首帧
+		（slot 1）；没有 `_DLSSGMultiFrameIndex` 的引擎退化成"帧号不连续才算新一次"。
+		"""
+
+		if slot is not None and slot > 1 :
+			return                  # 同一组的后续帧，算过组首了
+		if slot is None :
+			if self._cut_frame is not None and n - self._cut_frame <= 1 :
+				# 没有 slot 说明不是 frame_gen 系插件，只能按帧号合并连续标记
+				self._cut_frame = n
+				return
+		self._cuts += 1
+		self._cut_at = now
+		self._cut_frame = n
+
 	def snapshot(self) -> dict :
-		"""当前窗口的延迟统计（给 OSD 用）：帧数、平均/分位、在飞帧数。"""
+		"""当前窗口的延迟统计（给 OSD 用）：帧数、平均/分位、在飞帧数、切镜数。"""
 
 		with self._lock :
 			samples = list(self._latency)
@@ -183,6 +236,8 @@ class _Timeline :
 			threads = len(self._threads)
 			elapsed = _ms(time.perf_counter() - self._start)
 			last_ready = self._last_ready
+			cuts = self._cuts
+			cut_at = self._cut_at
 
 		average = sum(samples) / len(samples) if samples else 0.0
 		# 吞吐用最近的帧间隔：总耗时/帧数会被暂停、缓冲的空档拖偏
@@ -199,6 +254,8 @@ class _Timeline :
 			"max_inflight" : max_inflight,
 			"threads" : threads,
 			"last_ready" : None if last_ready is None else round(_ms(last_ready - self._start), 1),
+			"cuts" : cuts,
+			"last_cut" : None if cut_at is None else round(_ms(cut_at - self._start), 1),
 		}
 
 	@staticmethod
@@ -238,7 +295,18 @@ def attach_frame_probe(core, node, tag : str = "", on_ready = None) :
 
 	def _leave(n, f = None) :
 		try :
-			timeline.leave(n)
+			# 带 prop_src 时 VS 的 Python 绑定把补帧节点的输出帧直接传进来；
+			# 老绑定给的是列表，两种都接住。它的 `_DLSSGSceneCut` 由插件写好
+			if f is None :
+				props = None
+			elif hasattr(f, "props") :
+				props = f.props
+			else :
+				props = f[0].props if len(f) > 0 else None
+		except Exception :
+			props = None
+		try :
+			timeline.leave(n, props)
 		except Exception :
 			pass
 		return node

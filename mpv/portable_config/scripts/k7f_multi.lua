@@ -75,6 +75,8 @@ local CAPS = {
 	['MEMC_XESSFG_NV.vpy'] = 2,
 	-- FSR4 引擎只内插一对相邻帧的中点
 	['MEMC_FSR4.vpy'] = 2,
+	-- aji 的 rife_factor 只吃整数倍（vpy 侧 FRAMEGEN_VPY 会按 multi 取整倍数）
+	['MEMC_RIFE_AJI.vpy'] = 6,
 }
 
 -- 原生 playkit 滤镜的 multi 上限（plugin 侧 engineMaxMulti(Dlss) = 6）
@@ -135,9 +137,15 @@ local function save_state()
 	end
 end
 
--- vpy 的能力上限：按 vf 参数里 file 的文件名查表
-local function vpy_cap(script)
+-- vpy 的能力上限：按 vf 参数里 file 的文件名查表。
+-- 叠层脚本（MIX_AJI.vpy）按它 user-data 里的补帧引擎取上限。
+local function vpy_cap(script, ud_text)
 	local name = tostring(script or ''):gsub('\\', '/'):match('([^/]+)$') or ''
+	if name == 'MIX_AJI.vpy' then
+		local fg = B.parse_user_data(ud_text or '').framegen
+		if fg == 'vxessfg' or fg == 'vfsr4' then return 2 end
+		return CAPS['MEMC_RIFE_AJI.vpy']
+	end
 	return CAPS[name] or MAX_MULTI
 end
 
@@ -174,10 +182,10 @@ local function rewrite(chain)
 		if type(params) == 'table' then
 			if filter.name == 'vapoursynth' then
 				local value = multi
-				if value then
-					value = math.min(value, vpy_cap(params.file))
-				end
 				local old = params['user-data'] or ''
+				if value then
+					value = math.min(value, vpy_cap(params.file, old))
+				end
 				local new = with_multi(old, value)
 				if new ~= old then
 					params['user-data'] = (new ~= '' and new or nil)

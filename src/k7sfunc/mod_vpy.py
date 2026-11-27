@@ -35,6 +35,9 @@ __all__ = [
 	"VPY_PUBLISH",
 	"VPY_LOAD_PLUGIN",
 	"FRAMEGEN_VPY",
+	"AJI_VPY",
+	"AJI_VPY_OPTIONS",
+	"AJI_STACK_PUBLISH",
 ]
 
 # 报告格式版本：字段只增不改，mpv 侧按需取
@@ -55,6 +58,8 @@ FRAMEGEN_VPY_OPTIONS = {
 	"vxessfg" : ("multi", "scene", "duplicate", "pre_h", "gpu", "log", "stats"),
 	"vvfg" : ("multi", "mode", "scene", "duplicate", "pre_h", "gpu", "log", "stats"),
 	"vfsr4" : ("scene", "duplicate", "camera", "pre_h", "gpu", "log", "stats"),
+	# aji 的 RIFE：没有 duplicate/camera；模型与推理后端可以现场换（重建滤镜才生效）
+	"vaji" : ("multi", "scene", "model", "ensemble", "backend", "pre_h", "gpu", "log", "stats"),
 }
 
 ## 插件构造函数额外接受的参数（vdlssg 的模型档、vvfg 的模型档位、vfsr4 的相机运动）
@@ -63,6 +68,8 @@ _FRAMEGEN_PLUGIN_ARGS = {
 	"vxessfg" : (),
 	"vvfg" : ("mode",),
 	"vfsr4" : ("camera",),
+	# aji 没有插件级附加参数：conf/模型/后端都由 mod_aji 拼
+	"vaji" : (),
 }
 
 ## vvfg 档位的显示名（0 低 / 1 中 / 2 高，对应引擎的 low/medium/high 模型）
@@ -74,6 +81,7 @@ _FRAMEGEN_SCRIPT_LABELS = {
 	"vxessfg" : "MEMC_XESSFG",
 	"vvfg" : "MEMC_VFG",
 	"vfsr4" : "MEMC_FSR4",
+	"vaji" : "MEMC_RIFE_AJI",
 }
 
 ## OSD 上行报告的前缀（沿用旧脚本文案，mpv 侧直接显示）
@@ -82,6 +90,9 @@ _FRAMEGEN_TITLES = {
 	"vxessfg" : "XeSS-FG",
 	"vvfg" : "VFG",
 	"vfsr4" : "FSR4",
+	"vaji" : "RIFE-AJI",
+	"vaji_upscale" : "超分-AJI",
+	"vaji_tfix" : "时序-AJI",
 }
 
 ## 各键的取值规则：cast(int/float/bool/str/"gpu") + 上下限（multi 的界由引擎决定）
@@ -95,6 +106,10 @@ _FRAMEGEN_VALUE_SPECS = {
 	"log" : (bool, None, None),
 	"stats" : (bool, None, None),
 	"preset" : (str, None, None),
+	"model" : ("text", None, None),
+	"ensemble" : (bool, None, None),
+	"backend" : ("text", None, None),
+	"before_upscale" : (bool, None, None),
 	"gpu" : ("gpu", 0, None),
 }
 
@@ -162,6 +177,23 @@ def VPY_GET(ud : dict, key : str, default, cast = None, lo = None, hi = None) :
 
 	return value
 
+# user_data 的对外键名 → 内部键名：面板/报告用 device、rife_model…，插件参数仍叫 gpu、model…
+_UD_ALIASES = {
+	"device" : "gpu",
+	"rife_model" : "model",
+	"upscale_model" : "model_upscale",
+	"tfix_model" : "model_tfix",
+}
+
+def _normalize_ud(ud : dict) -> dict :
+	"""把面板的对外键名折回内部键名；新旧两种写法都能读。"""
+
+	out = dict(ud)
+	for external, internal in _UD_ALIASES.items() :
+		if external in out and internal not in out :
+			out[internal] = out[external]
+	return out
+
 def _coerce(key : str, raw, cast) :
 	"""把字符串转成目标类型；解析失败提示一次并返回哨兵 `_INVALID`。"""
 
@@ -175,6 +207,9 @@ def _coerce(key : str, raw, cast) :
 			return float(raw)
 		if cast is str :
 			return str(raw).strip().lower()
+		if cast == "text" :
+			# 保 case：模型号/后端名要原样交给 mod_aji 的白名单校验
+			return str(raw).strip()
 		if cast == "gpu" :
 			# None / auto / 空 = 跟随默认卡；否则是显卡序号
 			text = str(raw).strip().lower()
@@ -192,7 +227,7 @@ def _resolve_framegen_values(engine : str, user_data, literal : dict) -> dict :
 
 	# 引擎没暴露的键（如 vfsr4 的 multi）不读任何通道，保持字面量
 	values = dict(literal)
-	ud = VPY_PARSE_USER_DATA(user_data)
+	ud = _normalize_ud(VPY_PARSE_USER_DATA(user_data))
 
 	for key in FRAMEGEN_VPY_OPTIONS[engine] :
 		cast, lo, hi = _FRAMEGEN_VALUE_SPECS[key]
@@ -464,12 +499,18 @@ def FRAMEGEN_VPY(
 	duplicate : float = 0.005,
 	camera : int = 0,
 	preset : typing.Optional[str] = None,
+	model : typing.Optional[str] = None,
+	ensemble : bool = False,
+	backend : str = "auto",
 	pre_h : int = 0,
 	gpu : typing.Optional[int] = None,
 	log : bool = False,
 	stats : bool = False,
+	publish : bool = True,
 ) -> vs.VideoNode :
 	"""vs-framegen 系列的 vpy 主流程：参数解析 + 插件定位 + 补帧 + 上行报告。
+
+	`publish=False` 时不写 sidecar（供 `MIX_AJI` 这类多阶段脚本最后统一上报）。
 
 	vpy 里只需要写用户选项，然后：
 
@@ -486,12 +527,21 @@ def FRAMEGEN_VPY(
 	if engine not in FRAMEGEN_VPY_OPTIONS :
 		raise vs.Error(f"FRAMEGEN_VPY: 不认识的引擎 {engine!r}")
 
+	# aji 的宿主与插件加载都在 mod_aji；lazy 导入避免模块环
+	if engine == "vaji" :
+		from .mod_aji import RIFE_AJI as _RIFE_AJI, _aji_load_plugin
+
 	values = _resolve_framegen_values(engine, user_data, {
 		"multi" : multi, "mode" : mode, "scene" : scene, "duplicate" : duplicate,
 		"camera" : camera,
-		"preset" : preset, "pre_h" : pre_h, "gpu" : gpu, "log" : bool(log),
+		"preset" : preset, "model" : model, "ensemble" : bool(ensemble),
+		"backend" : backend,
+		"pre_h" : pre_h, "gpu" : gpu, "log" : bool(log),
 		"stats" : bool(stats),
 	})
+	# aji 的缺省档：没写就用 4.14，与旧脚本一致
+	if engine == "vaji" and not values.get("model") :
+		values["model"] = "4.14"
 
 	# 埋点：log 往 stderr 打、stats 往 JSON 写（OSD 常驻行用）；两者都关时什么都不建
 	debug = bool(values["log"])
@@ -510,7 +560,8 @@ def FRAMEGEN_VPY(
 	if stages :
 		stages.mark("resize")
 
-	VPY_LOAD_PLUGIN(engine, script_file, _FRAMEGEN_SCRIPT_LABELS[engine])
+	VPY_LOAD_PLUGIN(engine, script_file, _FRAMEGEN_SCRIPT_LABELS[engine]) \
+		if engine != "vaji" else _aji_load_plugin()
 	if stages :
 		stages.mark("load")
 
@@ -536,7 +587,24 @@ def FRAMEGEN_VPY(
 		args["gpu"] = values["gpu"]
 
 	# 建节点包含引擎/代理初始化与首帧预热，是构图耗时的大头
-	fg = getattr(core, engine).FrameGen(src, **args)
+	if engine == "vaji" :
+		# aji 不走 vs-framegen 的 FrameGen：conf/模型/后端都在 mod_aji 里拼。
+		# 切镜走 aji 自己的阈值检测（sc_mode=0）；阈值 0 视为关闭，给 1.0。
+		_threshold = values["scene"] if values["scene"] > 0 else 1.0
+		fg = _RIFE_AJI(
+			input=src,
+			model=values["model"],
+			ensemble=bool(values["ensemble"]),
+			fps_in=fps,
+			fps_num=values["multi"],
+			fps_den=1,
+			sc_mode=0,
+			scene_threshold=_threshold,
+			gpu=values["gpu"] if values["gpu"] is not None else 0,
+			backend=values["backend"],
+		)
+	else :
+		fg = getattr(core, engine).FrameGen(src, **args)
 	if stages :
 		stages.mark("framegen")
 
@@ -554,7 +622,8 @@ def FRAMEGEN_VPY(
 	if stages :
 		stages.mark("fps")
 
-	_publish_framegen(script_file, engine, values, fps, input, out)
+	if publish :
+		_publish_framegen(script_file, engine, values, fps, input, out)
 	if stages :
 		stages.mark("publish")
 
@@ -597,6 +666,13 @@ def _publish_framegen(script_file, engine : str, values : dict, fps, video_in, o
 	# VFG 的模型档位直接写进摘要：换档是用户当场改的，OSD 上要能看见
 	if "mode" in keys :
 		label += " · 档位 %s" % _FRAMEGEN_MODE_LABELS.get(values["mode"], values["mode"])
+	# aji 的模型号与推理后端也写进摘要（换模型要重建滤镜，OSD 上必须能确认）
+	if "model" in keys :
+		label += " · %s" % values["model"]
+	if "ensemble" in keys and values["ensemble"] :
+		label += " · ensemble"
+	if "backend" in keys and values.get("backend") not in (None, "", "auto") :
+		label += " · %s" % values["backend"]
 
 	if "preset" in keys :
 		summary = "%s · 预设 %s · 切镜 %g" % (label, values["preset"], values["scene"])
@@ -614,7 +690,14 @@ def _publish_framegen(script_file, engine : str, values : dict, fps, video_in, o
 		params["preset"] = values["preset"]
 	if "camera" in keys :
 		params["camera"] = values["camera"]
-	params["gpu"] = "auto" if values["gpu"] is None else values["gpu"]
+	if "model" in keys :
+		# sidecar 用对外键名，面板直接把它当 user_data 的键
+		params["rife_model"] = values["model"]
+	if "ensemble" in keys :
+		params["ensemble"] = values["ensemble"]
+	if "backend" in keys :
+		params["backend"] = values["backend"]
+	params["device"] = "auto" if values["gpu"] is None else values["gpu"]
 	params["pre_h"] = values["pre_h"]
 	params["log"] = values["log"]
 	params["stats"] = values["stats"]
@@ -670,3 +753,289 @@ def _make_stats_writer(script_file, engine : str, values : dict, fps, video_in, 
 		_write_atomic(path, text)
 
 	return write
+
+
+##################################################
+## 超分 / 时序（aji）vpy 宿主
+##################################################
+
+## 这两层都是 1 帧进 1 帧出：超分只改尺寸，时序只改像素
+## （时序链内部会自己向前后要多帧，vpy 侧不用管）
+AJI_VPY_OPTIONS = {
+	"vaji_upscale" : ("model", "backend", "gpu", "log", "stats"),
+	"vaji_tfix" : ("model", "scene", "before_upscale", "backend", "gpu", "log", "stats"),
+}
+
+## 面板没写模型时的缺省档位（短名表见 mod_aji._AJI_UPSCALE_MODELS / _AJI_TEMPORAL_MODELS）
+_AJI_VPY_DEFAULTS = {
+	"vaji_upscale" : {"model" : "hd_perf"},
+	"vaji_tfix" : {"model" : "s1"},
+}
+
+def _resolve_aji_values(engine : str, user_data, literal : dict) -> dict :
+	"""与 `_resolve_framegen_values` 同一套优先级（字面量 < 环境变量 < user_data）。
+
+	区别只是没有 multi，所以不需要按引擎取倍率上下界。
+	"""
+
+	values = dict(literal)
+	ud = _normalize_ud(VPY_PARSE_USER_DATA(user_data))
+
+	# 叠加脚本（MIX_AJI.vpy）用带层前缀的键，单层脚本用短键
+	if engine == "vaji_upscale" and "model_upscale" in ud :
+		ud["model"] = ud["model_upscale"]
+	if engine == "vaji_tfix" :
+		if "model_tfix" in ud :
+			ud["model"] = ud["model_tfix"]
+		if "tfix_scene" in ud :
+			ud["scene"] = ud["tfix_scene"]
+
+	for key in AJI_VPY_OPTIONS[engine] :
+		cast, lo, hi = _FRAMEGEN_VALUE_SPECS[key]
+
+		raw_env = os.environ.get(f"{engine.upper()}_{key.upper()}")
+		if raw_env :
+			if key == "log" :
+				values[key] = True
+			else :
+				value = _coerce(key, raw_env, cast)
+				if value is not _INVALID :
+					values[key] = value
+
+		# OSD 是用户当场的选择，优先级最高
+		if key in ud :
+			value = _coerce(key, ud[key], cast)
+			if value is not _INVALID :
+				values[key] = value
+
+	# 数值键统一钳一次：超界只收窄，不让插件在求值阶段报错
+	for key in AJI_VPY_OPTIONS[engine] :
+		value = values.get(key)
+		if not isinstance(value, (int, float)) or isinstance(value, bool) :
+			continue
+		cast, lo, hi = _FRAMEGEN_VALUE_SPECS[key]
+		if lo is not None and value < lo :
+			values[key] = lo
+		if hi is not None and value > hi :
+			values[key] = hi
+
+	# 模型号没给（面板留空/旧 user-data）时回到缺省档，免得摘要里出现 "None"
+	if not values.get("model") :
+		values["model"] = _AJI_VPY_DEFAULTS[engine]["model"]
+
+	return values
+
+def AJI_VPY(
+	input : vs.VideoNode,
+	script_file,
+	*,
+	engine : str,
+	user_data = None,
+	model : typing.Optional[str] = None,
+	scene : float = 0.150,
+	before_upscale : bool = False,
+	backend : str = "auto",
+	gpu : typing.Optional[int] = 0,
+	log : bool = False,
+	stats : bool = False,
+	publish : bool = True,
+) -> vs.VideoNode :
+	"""aji 的超分 / 时序阶段：1 帧进 1 帧出，参数解析 + 插件定位 + 上行报告。
+
+	`publish=False` 时不写 sidecar（供 `MIX_AJI` 这类多阶段脚本最后统一上报）。
+
+	vpy 里：
+
+		out = k7f.AJI_VPY(
+			video_in, __file__, engine="vaji_upscale",
+			user_data=globals().get("user_data"),
+			model=Model, gpu=Gpu, backend=Backend, log=Log, stats=Stats,
+		)
+
+	engine 取 `vaji_upscale`（超分）或 `vaji_tfix`（时序）。叠在补帧之后，
+	顺序固定为 插帧 → 超分 → 时序（见 mpv 侧菜单里的组合预设）。
+	"""
+
+	if engine not in AJI_VPY_OPTIONS :
+		raise vs.Error(f"AJI_VPY: 不认识的阶段 {engine!r}")
+
+	# 插件加载与 conf 拼装都在 mod_aji；lazy 导入避免模块环
+	from .mod_aji import UPSCALE_AJI, TEMPORAL_FIX_AJI, _aji_load_plugin
+
+	values = _resolve_aji_values(engine, user_data, {
+		"model" : model if model else _AJI_VPY_DEFAULTS[engine]["model"],
+		"scene" : scene,
+		"before_upscale" : bool(before_upscale),
+		"backend" : backend,
+		"gpu" : gpu,
+		"log" : bool(log),
+		"stats" : bool(stats),
+	})
+
+	debug = bool(values["log"])
+	stats_on = bool(values["stats"])
+	stages = _vpy_debug.Stages() if (debug or stats_on) else None
+	if stages :
+		stages.mark("resolve")
+
+	_aji_load_plugin()
+	if stages :
+		stages.mark("load")
+
+	# 显卡序号：面板的 auto 交给插件默认卡
+	device = values["gpu"] if values["gpu"] is not None else 0
+
+	if engine == "vaji_upscale" :
+		out = UPSCALE_AJI(
+			input=input,
+			model=values["model"],
+			gpu=device,
+			backend=values["backend"],
+		)
+	else :
+		out = TEMPORAL_FIX_AJI(
+			input=input,
+			model=values["model"],
+			scene_threshold=float(values["scene"]),
+			before_upscale=bool(values["before_upscale"]),
+			gpu=device,
+			backend=values["backend"],
+		)
+	if stages :
+		stages.mark("aji")
+
+	if publish :
+		_publish_aji(script_file, engine, values, input, out)
+	if stages :
+		stages.mark("publish")
+
+	if stages :
+		if debug :
+			in_info = VPY_CLIP_INFO(input) or {}
+			out_info = VPY_CLIP_INFO(out) or {}
+			_vpy_debug.dbg(
+				f"{engine} model={values['model']} backend={values['backend']}"
+				f" in={in_info.get('w')}x{in_info.get('h')}"
+				f" out={out_info.get('w')}x{out_info.get('h')}")
+		# 逐帧探针：与补帧侧同一套写手，mpv 侧 OSD 常驻行不分阶段
+		writer = None
+		if stats_on :
+			writer = _make_stats_writer(script_file, engine, values, input.fps, input, out, stages)
+		out = _vpy_debug.attach_frame_probe(core, out, tag=engine, on_ready=writer)
+		stages.mark("probe")
+		if debug :
+			_vpy_debug.dbg(f"stage {stages.report()}")
+		if writer :
+			writer(None)      # 构图后先写一份，OSD 打开不必等第一帧
+
+	return out
+
+def _publish_aji(script_file, engine : str, values : dict, video_in, out) -> None :
+	"""写 sidecar：超分标倍数与模型，时序标模型与阈值（OSD 上要能一眼看出叠了哪层）。"""
+
+	backend = values.get("backend")
+	tail = "" if not backend or backend == "auto" else " · %s" % backend
+
+	if engine == "vaji_upscale" :
+		summary = "2× · %s%s" % (values["model"], tail)
+	else :
+		summary = "%s · 阈 %.3f%s" % (values["model"], float(values["scene"]), tail)
+		if values["before_upscale"] :
+			summary += " · 缩前"
+
+	# sidecar 的 params 用对外键名（面板把它直接当 user_data 的键）
+	model_key = "upscale_model" if engine == "vaji_upscale" else "tfix_model"
+	params = {model_key : values["model"], "backend" : backend}
+	if "scene" in AJI_VPY_OPTIONS[engine] :
+		params["tfix_scene"] = values["scene"]
+	if "before_upscale" in AJI_VPY_OPTIONS[engine] :
+		params["before_upscale"] = values["before_upscale"]
+	params["device"] = "auto" if values["gpu"] is None else values["gpu"]
+	params["log"] = values["log"]
+	params["stats"] = values["stats"]
+
+	VPY_PUBLISH(
+		script_file,
+		title=_FRAMEGEN_TITLES[engine],
+		engine=engine,
+		params=params,
+		summary=summary,
+		in_info=VPY_CLIP_INFO(video_in),
+		out_info=VPY_CLIP_INFO(out),
+	)
+
+def AJI_STACK_PUBLISH(
+	script_file,
+	*,
+	stages : str,
+	values : dict,
+	user_data = None,
+	video_in,
+	out,
+) -> None :
+	"""多阶段脚本（`MIX_AJI.vpy`）的统一上报：一条 sidecar 说明整条链。
+
+	`stages` 是启用层的短字符组合，顺序固定 `f` → `u` → `t`；`values` 里带
+	各层的模型/阈值。单层脚本不走这里（它们自己上报更细）。
+	"""
+
+	# 面板写进 user_data 的值优先于脚本里的字面量，摘要要反映实际生效的设置
+	ud = _normalize_ud(VPY_PARSE_USER_DATA(user_data))
+	values = dict(values)
+	for key in ("multi", "scene", "model", "ensemble", "model_upscale",
+			"model_tfix", "tfix_scene", "before_upscale", "backend", "gpu",
+			"log", "stats") :
+		if key not in ud :
+			continue
+		cast, lo, hi = _FRAMEGEN_VALUE_SPECS[key]
+		value = _coerce(key, ud[key], cast)
+		if value is not _INVALID :
+			values[key] = value
+
+	parts = []
+	labels = []
+	framegen = str(values.get("framegen") or "vaji").strip()
+	if "f" in stages :
+		labels.append("补帧")
+		if framegen == "vaji" :
+			parts.append("%d× · %s" % (int(values["multi"]), values["model"]))
+		else :
+			# vsfg 系没有模型号，摘要里报引擎名；FSR4 固定 2×
+			parts.append("%d× · %s" % (2 if framegen == "vfsr4" else int(values["multi"]),
+				_FRAMEGEN_TITLES.get(framegen, framegen)))
+		if values["ensemble"] and framegen == "vaji" :
+			parts.append("ensemble")
+	if "u" in stages :
+		labels.append("超分")
+		parts.append("2× · %s" % values["model_upscale"])
+	if "t" in stages :
+		labels.append("时序")
+		parts.append("%s · 阈 %.3f" % (values["model_tfix"], float(values["tfix_scene"])))
+
+	backend = values.get("backend")
+	if backend and backend != "auto" :
+		parts.append(str(backend))
+
+	params = {"stages" : stages, "backend" : backend}
+	params["device"] = "auto" if values.get("gpu") is None else values["gpu"]
+	params["log"] = values["log"]
+	params["stats"] = values["stats"]
+	if "f" in stages :
+		params.update({"framegen" : framegen, "multi" : values["multi"], "scene" : values["scene"],
+			"rife_model" : values["model"], "ensemble" : values["ensemble"]})
+	if "u" in stages :
+		params["upscale_model"] = values["model_upscale"]
+	if "t" in stages :
+		params.update({"tfix_model" : values["model_tfix"], "tfix_scene" : values["tfix_scene"],
+			"before_upscale" : values["before_upscale"]})
+
+	VPY_PUBLISH(
+		script_file,
+		title="叠层-AJI（%s）" % "+".join(labels),
+		engine="vaji_stack",
+		params=params,
+		summary=" / ".join(parts),
+		in_info=VPY_CLIP_INFO(video_in),
+		out_info=VPY_CLIP_INFO(out),
+	)
+
