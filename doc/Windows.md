@@ -501,7 +501,7 @@ RIFE_NV(input=?, model=46, int8_qnt=False, turbo=2, fps_in=23.976, fps_num=2, fp
 > plugins: [vs-framegen](https://github.com/o5-null/vs-framegen)（`vdlssg.dll` + `dlss45` 引擎包）
 
 ```python
-DLSSG_NV(input=?, multi=2, scene_threshold=0.25, camera=0, fps_in=23.976, gpu=None, proxy_dir=None, log=False)
+DLSSG_NV(input=?, multi=2, scene_threshold=0.12, duplicate_threshold=0.005, camera=0, fps_in=23.976, gpu=None, proxy_dir=None, log=False)
 ```
 
 用 NVIDIA DLSS Frame Generation 生成中间帧，补到固定整数倍（vs-framegen 的宿主封装）。
@@ -509,7 +509,8 @@ DLSSG_NV(input=?, multi=2, scene_threshold=0.25, camera=0, fps_in=23.976, gpu=No
 ||||
 |:---|:---|:---|
 | <kbd>multi</kbd> | `2`\|`3`\|`4`\|`5`\|`6` | 帧率倍数，每对相邻帧插 `multi-1` 张 |
-| <kbd>scene_threshold</kbd> | 浮点 | 切镜阈值（三平面 8 采样平均绝对差， 0~1 ）， `0` 为禁用 |
+| <kbd>scene_threshold</kbd> | 浮点 | 切镜阈值（两帧梯度方向直方图距离， 0~1 ）， `0` 为禁用。与亮度无关，闪光/曝光跳变不误判 |
+| <kbd>duplicate_threshold</kbd> | 浮点 | 重复帧阈值（32px 块内亮度最大差， 1 个 10bit 码值 = 1/876 ），低于它就把生成帧换成前一帧的拷贝、跳过引擎； `0` 为禁用 |
 | <kbd>camera</kbd> | `0`\|`1`\|`2`\|`3` | 相机类型， `0` 为默认 |
 | <kbd>fps_in</kbd> | 浮点 | 指定输入源的帧率，输出帧率为 `fps_in*multi` |
 | <kbd>gpu</kbd> | 整数\|`None` | 指定 DXGI 适配器序号， `None` 跟随 sm86 代理选中的显卡 |
@@ -517,7 +518,9 @@ DLSSG_NV(input=?, multi=2, scene_threshold=0.25, camera=0, fps_in=23.976, gpu=No
 | <kbd>log</kbd> | `True`\|`False` | 是否每帧向 stderr 打印耗时 |
 
 > [!NOTE]
-> 单进程只支持一种帧尺寸；4K 上倍率取 `2` ，1080p 才建议 `4` 以上。插件只接受 `RGBS` ，本模块已在内部按 709 转换。
+> 单进程只支持一种帧尺寸；4K 上倍率取 `2` ，1080p 才建议 `4` 以上。
+> 插件接受平面 YUV（8..16bit）或 `RGBS` ：YUV 直通，矩阵/量化范围按帧属性（ `_Matrix` 缺省回退 `_ColorSpace` 、`_Range` 缺省回退 `_ColorRange` ）；只有 RGB 源才由本模块按帧属性矩阵转回 `YUV420P10`（缺省 709 ）。
+> 兜底帧会打属性： `_DLSSGFallback` `0` 正常 / `1` 切镜 / `2` 运行库抑制 / `3` 末帧 / `4` 重复帧，重复帧另带 `_DLSSGDuplicate=1`。
 > 同一进程只能初始化一次 NGX ，因此不能与 [XESSFG_NV](#xessfg_nv) 同时使用。
 
 ***
@@ -528,7 +531,7 @@ DLSSG_NV(input=?, multi=2, scene_threshold=0.25, camera=0, fps_in=23.976, gpu=No
 > plugins: [vs-framegen](https://github.com/o5-null/vs-framegen)（`vxessfg.dll` + `xessfg` 引擎包）
 
 ```python
-XESSFG_NV(input=?, multi=2, scene_threshold=0.25, camera=0, fps_in=23.976, gpu=None, proxy_dir=None, log=False)
+XESSFG_NV(input=?, multi=2, scene_threshold=0.12, duplicate_threshold=0.005, camera=0, fps_in=23.976, gpu=None, proxy_dir=None, log=False)
 ```
 
 用 Intel XeSS-FG 生成中间帧，补到固定整数倍。参数含义同 [DLSSG_NV](#dlssg_nv)，区别只有倍率上限（<kbd>camera</kbd> 对本引擎无效）。
@@ -548,7 +551,7 @@ XESSFG_NV(input=?, multi=2, scene_threshold=0.25, camera=0, fps_in=23.976, gpu=N
 > plugins: [vs-framegen](https://github.com/o5-null/vs-framegen)（`vvfg.dll` + `vfg` 引擎包）
 
 ```python
-VFG_NV(input=?, multi=2, scene_threshold=0.25, camera=0, fps_in=23.976, gpu=None, proxy_dir=None, log=False)
+VFG_NV(input=?, multi=2, scene_threshold=0.12, duplicate_threshold=0.005, camera=0, fps_in=23.976, gpu=None, proxy_dir=None, log=False)
 ```
 
 用 NVIDIA Video Frame Generation 生成中间帧，补到固定整数倍。参数含义同 [DLSSG_NV](#dlssg_nv)，区别只有倍率上限与显存代价（<kbd>camera</kbd> 对本引擎无效）。
@@ -565,7 +568,7 @@ VFG_NV(input=?, multi=2, scene_threshold=0.25, camera=0, fps_in=23.976, gpu=None
 > plugins: [vs-framegen](https://github.com/o5-null/vs-framegen)（`vfsr4.dll` + `fsr4` 引擎包）
 
 ```python
-FSR4(input=?, multi=2, scene_threshold=0.25, camera=0, fps_in=23.976, gpu=None, proxy_dir=None, log=False)
+FSR4(input=?, multi=2, scene_threshold=0.12, duplicate_threshold=0.005, camera=0, fps_in=23.976, gpu=None, proxy_dir=None, log=False)
 ```
 
 用 AMD FidelityFX FSR 4 帧生成补帧，**固定 2 倍**。
@@ -1082,6 +1085,44 @@ STAB_HQ(input=?)
 ```
 
 镜头防抖（此类问题常见于胶片转录作品）
+
+***
+
+## 检测
+
+### SCDetect2
+
+```python
+SCDetect2(input=?, algo=1, threshold=0.1, max_size=2304000, hist_sstep=1, hog_sstep=4)
+```
+
+为每帧写入 `_SceneChangePrev` / `_SceneChangeNext` 属性；补帧算子读到这两个属性就让位给外部检测。
+
+||||
+|:---|:---|:---|
+| <kbd>algo</kbd> | `1`\|`2`\|`3`\|`4`\|`5` | 检测算法： 1 MAE ／ 2 边缘 MAE ／ 3 直方图 ／ 4 直方图&边缘 ／ 5 HOG（梯度方向直方图） |
+| <kbd>threshold</kbd> | 浮点 (0~1) | 切换阈值。建议： algo1 `0.10~0.15` 、algo2 `0.05~0.10` 、algo3 `0.20~0.40` 、algo5 `0.10~0.15`（默认 `0.12`） |
+| <kbd>max_size</kbd> | 整数 | 帧面积上限，超过则先 Bilinear 降采样（默认 `2304000` ，`0` 禁用） |
+| <kbd>hist_sstep</kbd> | `1`\|`2` | 直方图的采样步长 |
+| <kbd>hog_sstep</kbd> | 整数 | HOG 的采样步长（默认 `4` ，即 2x2 块一个样本） |
+
+> [!NOTE]
+> `algo=5` 与 vs-framegen 插件内置的切镜检测同一口径（亮度 4px 采样 → 前向差分 → 9 个无符号方向区间（ 0~π ）的幅值加权直方图 → 距离 = 两直方图 L1/2 ），同素材上两者判定一致。
+> 方向与亮度无关，闪光/曝光跳变不会误判；有效梯度覆盖低于 5% 时（黑场、渐隐尾帧、纯色）距离记 0 ，即不判切镜。
+> 重复帧检测不在本函数内：补帧算子用 `duplicate_threshold` 直接复制前一帧。
+
+### SCENE_DETECT
+
+```python
+SCENE_DETECT(input=?, sc_mode=1, thr=0.15, thd1=240, thd2=130)
+```
+
+||||
+|:---|:---|:---|
+| <kbd>sc_mode</kbd> | `0`\|`1`\|`2` | `0` 不检测 / `1` 走 `SCDetect2`（algo 1 ） / `2` 走 `core.mv.SCDetection` |
+| <kbd>thr</kbd> | 浮点 | `sc_mode=1` 时的切换阈值 |
+| <kbd>thd1</kbd> | 整数 | `sc_mode=2` 时 mvtools 的 `thscd1` |
+| <kbd>thd2</kbd> | 整数 | `sc_mode=2` 时 mvtools 的 `thscd2` |
 
 ***
 

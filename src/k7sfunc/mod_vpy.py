@@ -44,10 +44,10 @@ SIDECAR_SUFFIX = ".k7f.json"
 
 # 每个引擎在 vpy 里暴露哪些参数通道（决定 env / user_data 认哪些键、报告里有哪些字段）
 FRAMEGEN_VPY_OPTIONS = {
-	"vdlssg" : ("multi", "scene", "preset", "pre_h", "gpu", "log"),
-	"vxessfg" : ("multi", "scene", "pre_h", "gpu", "log"),
-	"vvfg" : ("multi", "mode", "scene", "pre_h", "gpu", "log"),
-	"vfsr4" : ("scene", "camera", "pre_h", "gpu", "log"),
+	"vdlssg" : ("multi", "scene", "duplicate", "preset", "pre_h", "gpu", "log"),
+	"vxessfg" : ("multi", "scene", "duplicate", "pre_h", "gpu", "log"),
+	"vvfg" : ("multi", "mode", "scene", "duplicate", "pre_h", "gpu", "log"),
+	"vfsr4" : ("scene", "duplicate", "camera", "pre_h", "gpu", "log"),
 }
 
 ## 插件构造函数额外接受的参数（vdlssg 的模型档、vvfg 的模型档位、vfsr4 的相机运动）
@@ -82,6 +82,7 @@ _FRAMEGEN_VALUE_SPECS = {
 	"multi" : (int, None, None),
 	"mode" : (int, 0, 2),
 	"scene" : (float, 0.0, 1.0),
+	"duplicate" : (float, 0.0, 0.05),
 	"camera" : (int, 0, None),
 	"pre_h" : (int, 0, None),
 	"log" : (bool, None, None),
@@ -406,6 +407,37 @@ def VPY_LOAD_PLUGIN(plugin_ns : str, script_file, label : str = None) -> None :
 ## 帧生成 vpy 宿主
 ##################################################
 
+## H.273 矩阵值 → resize 的 matrix_s 名。RGB 源转回 YUV 时按源声明走：
+## HDR10 是 BT.2020，硬套 709 会让颜色整体偏掉（色度矩阵不一致，不是简单的亮度偏移）。
+_FRAMEGEN_MATRIX_NAMES = {
+	0 : "rgb", 1 : "709", 2 : "unspec", 4 : "fcc", 5 : "470bg",
+	6 : "170m", 7 : "240m", 8 : "ycgco", 9 : "2020ncl", 10 : "2020cl",
+}
+
+def _framegen_matrix_s(clip : vs.VideoNode) -> str :
+	"""源声明的矩阵名：`_Matrix` 优先，mpv 路径（只写 `_ColorSpace`）退到它；
+	RGB 源通常没有矩阵属性，就按 `_Primaries` 选（BT.2020 → 2020ncl），否则按 709。
+
+	取首帧属性是 vpy 构图期的常规做法（k7sfunc 其它模块读 `_ColorRange` 也一样），
+	代价只有首帧解码一次，换来 RGB→YUV 那一步不会把 BT.2020 的 HDR 当成 709。
+	"""
+	matrix = None
+	primaries = None
+	try :
+		props = clip.get_frame(0).props
+		matrix = props.get("_Matrix")
+		if matrix is None :
+			matrix = props.get("_ColorSpace")
+		primaries = props.get("_Primaries")
+	except Exception :
+		matrix = primaries = None
+	if matrix is not None :
+		return _FRAMEGEN_MATRIX_NAMES.get(int(matrix), "709")
+	if primaries is not None and int(primaries) == 9 :  # BT.2020
+		return "2020ncl"
+	return "709"
+
+
 def FRAMEGEN_VPY(
 	input : vs.VideoNode,
 	script_file,
@@ -415,7 +447,8 @@ def FRAMEGEN_VPY(
 	user_data = None,
 	multi : int = 2,
 	mode : int = 1,
-	scene : float = 0.25,
+	scene : float = 0.12,
+	duplicate : float = 0.005,
 	camera : int = 0,
 	preset : typing.Optional[str] = None,
 	pre_h : int = 0,
@@ -440,7 +473,8 @@ def FRAMEGEN_VPY(
 		raise vs.Error(f"FRAMEGEN_VPY: 不认识的引擎 {engine!r}")
 
 	values = _resolve_framegen_values(engine, user_data, {
-		"multi" : multi, "mode" : mode, "scene" : scene, "camera" : camera,
+		"multi" : multi, "mode" : mode, "scene" : scene, "duplicate" : duplicate,
+		"camera" : camera,
 		"preset" : preset, "pre_h" : pre_h, "gpu" : gpu, "log" : bool(log),
 	})
 
@@ -475,6 +509,7 @@ def FRAMEGEN_VPY(
 		stages.mark("prep")
 
 	args = {"multi" : values["multi"], "scene_threshold" : values["scene"],
+			"duplicate_threshold" : values["duplicate"],
 			"log" : 1 if values["log"] else 0}
 	for key in _FRAMEGEN_PLUGIN_ARGS[engine] :
 		# camera/mode 的 0 是合法取值，不能按真假丢；其余键是"有值才传"
@@ -489,7 +524,8 @@ def FRAMEGEN_VPY(
 		stages.mark("framegen")
 
 	## 输出格式与输入相同：YUV 源原样交给 mpv；只有 RGB 源才转回 10bit YUV
-	out = fg if yuv_in else core.resize.Bilinear(fg, format=vs.YUV420P10, matrix_s="709")
+	out = fg if yuv_in else core.resize.Bilinear(
+		fg, format=vs.YUV420P10, matrix_s=_framegen_matrix_s(input))
 
 	## 插件已把输出帧率乘以 multi，并逐帧写好 _Duration/_AbsoluteTime；只有源没有帧率时才兜底
 	if not out.fps_num or not out.fps_den :

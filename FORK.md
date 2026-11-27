@@ -94,10 +94,18 @@ clip.set_output()
 
 `mod_memc.py` 追加了四个引擎的封装，宿主源码来自 [o5-null/vs-framegen](https://github.com/o5-null/vs-framegen)：
 `DLSSG_NV`(vdlssg) / `XESSFG_NV`(vxessfg) / `VFG_NV`(vvfg) / `FSR4`(vfsr4)。
-它们都接受 `RGBS` 或 YUV 输入（内部按 709 转换），输出回到源格式与真实输出帧率（`fps_in * multi`）。
+它们都接受平面 YUV（ 8..16bit）或 `RGBS` 输入，输出回到源格式与真实输出帧率（`fps_in * multi`）。
+YUV 直通，矩阵按帧属性（`_Matrix` 缺省回退 `_ColorSpace`）、量化范围按 `_Range`（缺省回退 `_ColorRange`）；
+只有 RGB 源才由模块按帧属性矩阵转回 `YUV420P10`（缺省 709）。
 
 - 倍率：`DLSSG_NV` / `VFG_NV` 为 2–6，`XESSFG_NV` 只放行 2（sm86 上 3×/4× 会触发
   `0xe0d55001` 引擎自杀），`FSR4` 固定 2
+- 切镜与重复帧检测都在插件内部，逐帧一次：
+  `scene_threshold`（默认 `0.12`）= 两帧梯度方向直方图（HOG）距离，方向与亮度无关，
+  闪光/曝光跳变不误判；`duplicate_threshold`（默认 `0.005`）= 32px 块内亮度最大差，
+  低于它就复制前一帧、跳过引擎。命中时打 `_DLSSGFallback`（`1` 切镜 / `4` 重复帧）
+  与 `_DLSSGDuplicate`，`0` 关闭检测
+- 想在图里自己先检测（例如和别的前端共用结果）就用 `SCDetect2(algo=5)`，它与插件同一口径
 - 模型档位：只有 `VFG_NV` 有 `mode=0/1/2`（low/medium/high，默认 medium）。medium 与
   high 只差约 0.4 dB PSNR-Y，但 1080p 每张内插约 3 ms vs 30 ms、显存约 0.7 vs 1.4 GB；
   vpy 侧对应 `Mode` 字面量、环境变量 `VVFG_MODE`、`user-data="mode=2"`
@@ -121,20 +129,21 @@ YUV 帧做直通（不再进出 RGBS 两趟全分辨率转换），只有 RGB �
 import k7sfunc as k7f
 
 Multi = 3
-Scene = 0.25
+Scene = 0.12
+Dup = 0.005
 # ... 用户选项 ...
 
 out = k7f.FRAMEGEN_VPY(
 	video_in, __file__, engine="vdlssg", fps_in=container_fps,
 	user_data=globals().get("user_data"),
-	multi=Multi, scene=Scene, preset=Preset, pre_h=Pre_H, gpu=Gpu, log=Log,
+	multi=Multi, scene=Scene, duplicate=Dup, preset=Preset, pre_h=Pre_H, gpu=Gpu, log=Log,
 )
 out.set_output()
 ```
 
 - 下行：`VPY_PARSE_USER_DATA()` / `VPY_GET()` 读 mpv 注入的 `user_data`，
   优先级仍是 脚本字面量 < 环境变量 `<NS>_<KEY>` < `user-data`；有类型转换与钳制
-  （multi 按引擎允许表、scene 0–1、其余下限 0；非法值提示一次后保持默认）。
+  （multi 按引擎允许表、scene 0–1、duplicate 0–0.05、其余下限 0；非法值提示一次后保持默认）。
   `k7f_bridge.lua` 的 `build_user_data()` 供前端拼串，值里有空白或 `: , ; = "` 会被跳过并 warn。
 - 插件定位：`VPY_LOAD_PLUGIN()` 先看 `core.<ns>` 是否已自动加载，没有再按
   包根 `vs-plugins/` → 脚本旁 `../`、`../../` → 开发树 `vs-dlssg/bin/` 的顺序 `LoadPlugin`。

@@ -5,7 +5,7 @@ k7f_vpypar.lua —— 播放中用 OSD 菜单改 VapourSynth 补帧脚本的参�
 mpv 会把它作为全局变量 user_data 注入脚本（默认空串；mpv 每次 seek 都会重跑脚本，
 所以跳转/重建后参数一定生效）。本脚本维护一份参数状态，改动后重建滤镜：
 
-    vf append @<label>:vapoursynth="<脚本>":user-data="multi=4;scene=0.35"
+    vf append @<label>:vapoursynth="<脚本>":user-data="multi=4;scene=0.12;duplicate=0.005"
 
 上行：vpy 把实际生效的参数写到脚本同目录的 `<脚本>.k7f.json`，这里用
 `k7f_bridge.watch_status()` 轮询（默认 0.5s），OSD 可显示“设置”和“实际”两行。
@@ -81,8 +81,8 @@ local params = {
         choices = { { '2×', '2' }, { '3×', '3' }, { '4×', '4' }, { '5×', '5' }, { '6×', '6' } },
     },
     {
-        key = 'scene', name = '切镜阈值', default = '0.25',
-        choices = { { '关闭', '0' }, { '0.15', '0.15' }, { '0.25', '0.25' }, { '0.35', '0.35' }, { '0.5', '0.5' } },
+        key = 'scene', name = '切镜阈值', default = '0.12',
+        choices = { { '关闭', '0' }, { '0.08', '0.08' }, { '0.12', '0.12' }, { '0.15', '0.15' }, { '0.2', '0.2' } },
     },
     {
         key = 'pre_h', name = '预缩高度', default = '0',
@@ -108,6 +108,26 @@ if VFG_SCRIPTS[script_basename(o.script)] then
     table.insert(params, 2, {
         key = 'mode', name = '档位', default = '1',
         choices = { { '低', '0' }, { '中', '1' }, { '高', '2' } },
+    })
+end
+
+-- 重复帧阈值只有帧生成补帧有（k7sfunc 的 FRAMEGEN_VPY 认 duplicate）；RIFE_AJI 没有这一项
+local FRAMEGEN_SCRIPTS = {
+    ['memc_dlssg_nv.vpy'] = true,
+    ['memc_vfg_nv.vpy'] = true,
+    ['memc_xessfg_nv.vpy'] = true,
+    ['memc_fsr4.vpy'] = true,
+}
+
+if FRAMEGEN_SCRIPTS[script_basename(o.script)] then
+    -- 紧跟切镜阈值：两者同属检测，一起调
+    local at = #params + 1
+    for i, p in ipairs(params) do
+        if p.key == 'scene' then at = i + 1 end
+    end
+    table.insert(params, at, {
+        key = 'duplicate', name = '重复帧阈值', default = '0.005',
+        choices = { { '关闭', '0' }, { '0.003', '0.003' }, { '0.005', '0.005' }, { '0.01', '0.01' } },
     })
 end
 

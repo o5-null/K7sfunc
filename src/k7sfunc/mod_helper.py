@@ -514,12 +514,92 @@ def PROP_HISTDIFF(
 
 	return clip.std.ModifyFrame(clips=[clip, clip_next], selector=_calc_hist_diff)
 
+def PROP_HOGDIFF(
+	input : vs.VideoNode,
+	sample_step : int = 4,
+	bins : int = 9,
+	min_mag : float = 0.02,
+	min_coverage : float = 0.05,
+) -> vs.VideoNode :
+	"""
+	为每帧添加梯度方向直方图（HOG）差异属性
+
+	与 vs-framegen 插件内置切镜检测同一口径：取亮度平面 → 按 sample_step 采样 →
+	前向差分求梯度 → 方向按 bins 个无符号区间（0~π）做幅值加权直方图 →
+	两帧直方图的 L1 距离除以 2 写入 SCPlaneStatsDiff （0~1）。
+
+	方向与亮度无关，所以曝光跳变/闪白不会误判；幅值过 min_mag 的样本占比低于
+	min_coverage 时（黑场、渐隐尾帧、纯色）距离记 0。
+	"""
+
+	import numpy as np
+
+	clip = input
+	if sample_step < 1 :
+		raise ValueError("PROP_HOGDIFF: sample_step must be >= 1")
+	if bins < 2 :
+		raise ValueError("PROP_HOGDIFF: bins must be >= 2")
+	if clip.format.color_family != vs.GRAY :
+		clip = clip.std.ShufflePlanes(planes=0, colorfamily=vs.GRAY)
+
+	# 亮度归一化口径与插件一致：full 用峰值，limited 用 16~235 这段
+	peak = 1 << (clip.format.bits_per_sample - 1)
+	black = 16 * peak // 256
+	white = 219 * peak // 256
+
+	clip_next = clip.std.Trim(first=1) + clip.std.Trim(first=clip.num_frames - 1)
+
+	def _luma01(plane, full : bool) :
+		data = np.asarray(plane, dtype=np.float32)
+		if full :
+			return data / float((1 << (clip.format.bits_per_sample)) - 1)
+		return (data - black) / float(white)
+
+	def _hist(lum : "np.ndarray") :
+		gx = lum[:, 1:] - lum[:, :-1]
+		gy = lum[1:, :] - lum[:-1, :]
+		h = min(gx.shape[0], gy.shape[0])
+		w = min(gx.shape[1], gy.shape[1])
+		gx = gx[:h, :w]
+		gy = gy[:h, :w]
+		mag = np.hypot(gx, gy)
+		keep = mag >= min_mag
+		if float(keep.mean()) < min_coverage :
+			return None
+		# arctan2 给出 (-π, π] ，无符号方向折到 [0, π)
+		angle = np.mod(np.arctan2(gy, gx), np.pi)
+		idx = np.clip((angle * (bins / np.pi)).astype(np.int32), 0, bins - 1)
+		hist = np.bincount(idx[keep], weights=mag[keep], minlength=bins)
+		total = float(hist.sum())
+		if total <= 1e-8 :
+			return None
+		return hist / total
+
+	def _calc_hog_diff(n, f) :
+		fout = f[0].copy()
+		full = f[0].props.get("_Range", 0) == 1
+		lum_curr = _luma01(f[0][0], full)[::sample_step, ::sample_step]
+		lum_next = _luma01(f[1][0], full)[::sample_step, ::sample_step]
+
+		hist_curr = _hist(lum_curr)
+		hist_next = _hist(lum_next)
+		if hist_curr is None or hist_next is None :
+			diff = 0.0
+		else :
+			diff = 0.5 * float(np.abs(hist_curr - hist_next).sum())
+
+		fout.props['SCPlaneStatsDiff'] = float(diff)
+		return fout
+
+	return clip.std.ModifyFrame(clips=[clip, clip_next], selector=_calc_hog_diff)
+
 def SCDetect2(
 	input : vs.VideoNode,
 	algo : int = 1,
 	threshold : float = 0.1,
 	max_size : int = 2304000,
 	hist_sstep : int = 1,
+	hog_sstep : int = 4,
 	) -> vs.VideoNode :
 	"""
 	场景切换检测++
@@ -528,23 +608,28 @@ def SCDetect2(
 		algo : 检测算法
 			1 MAE （默认，速度最快） 2 边缘MAE （对亮度变化不敏感）
 			3 直方图 （对整体亮度变化不敏感） 4 直方图&边缘MAE
+			5 HOG （梯度方向直方图，与 vs-framegen 插件内置检测同一口径）
 		threshold : 场景切换阈值 (0.0-1.0) 。建议值范围：
 			algo=1: 0.10 ... 0.15
 			algo=2: 0.05 ... 0.10
 			algo=3: 0.20 ... 0.40
 			algo=4: 0.10 ... 0.15
+			algo=5: 0.10 ... 0.15 （默认 0.12 ，与插件 scene_threshold 相同）
 		max_size : 最大帧面积阈值，默认 2304000 （不建议低于 518400 ），超过则预降采样， 0 则禁用
 		hist_sstep : 直方图采样步长，默认 1 （全采样）
+		hog_sstep : HOG 采样步长，默认 4 （2x2 块一个样本）
 	"""
 
 	if threshold < 0.0 or threshold > 1.0 :
 		raise ValueError("SCDetect2: threshold must be between 0 and 1")
 	if input.num_frames == 1 :
 		raise ValueError("SCDetect2: input must have more than one frame")
-	if algo not in (1, 2, 3, 4) :
+	if algo not in (1, 2, 3, 4, 5) :
 		raise ValueError("SCDetect2: unsupported algo value")
 	if hist_sstep not in (1, 2) :
 		raise ValueError("SCDetect2: hist_sstep must be one of (1, 2)")
+	if hog_sstep < 1 :
+		raise ValueError("SCDetect2: hog_sstep must be >= 1")
 
 	clip = input
 	clip_orig = clip
@@ -600,7 +685,10 @@ def SCDetect2(
 			selector=_set_scene_change_combined
 		)
 
-	# algo 1/2/3 共用阈值判定与属性写入逻辑
+	elif algo == 5 :
+		compared = PROP_HOGDIFF(clip, sample_step=hog_sstep)
+
+	# algo 1/2/3/5 共用阈值判定与属性写入逻辑
 	compared_prev = compared.std.DuplicateFrames([0])[:-1]
 
 	def _set_scene_change(n, f) :
