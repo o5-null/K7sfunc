@@ -32,6 +32,7 @@ __all__ = [
 	"VPY_SIDECAR_PATH",
 	"VPY_STATS_PATH",
 	"VPY_CLIP_INFO",
+	"VPY_PLUGIN_INFO",
 	"VPY_PUBLISH",
 	"VPY_LOAD_PLUGIN",
 	"FRAMEGEN_VPY",
@@ -446,10 +447,11 @@ def VPY_LOAD_PLUGIN(plugin_ns : str, script_file, label : str = None) -> None :
 	) :
 		if os.path.isfile(cand) :
 			core.std.LoadPlugin(os.path.abspath(cand))
-			break
+			return os.path.abspath(cand)
 
 	if not hasattr(core, plugin_ns) :
 		raise vs.Error(f"{label or 'MEMC'}: 找不到 {dll}")
+	return None
 
 ##################################################
 ## 帧生成 vpy 宿主
@@ -484,6 +486,81 @@ def _framegen_matrix_s(clip : vs.VideoNode) -> str :
 	if primaries is not None and int(primaries) == 9 :  # BT.2020
 		return "2020ncl"
 	return "709"
+
+
+def _dll_version(path) :
+	"""读 DLL 的 VERSIONINFO（优先 ProductVersion），取不到返回 None。
+
+	VS 插件跑起来后只能拿到注册时写的 `PluginVersion`（vdlssg 一直写 0.1），
+	真正和发行包对得上的是文件版本资源，所以顺手读一下。
+	"""
+
+	if not path or not os.path.isfile(path) :
+		return None
+	try :
+		import ctypes
+		from ctypes import wintypes
+	except Exception :
+		return None
+
+	class _Fixed(ctypes.Structure) :
+		_fields_ = [(name, ctypes.c_uint32) for name in (
+			"dwSignature", "dwStrucVersion", "dwFileVersionMS", "dwFileVersionLS",
+			"dwProductVersionMS", "dwProductVersionLS", "dwFileFlagsMask", "dwFileFlags",
+			"dwFileOS", "dwFileType", "dwFileSubtype", "dwFileDateMS", "dwFileDateLS",
+		)]
+
+	version = ctypes.windll.version
+	size = version.GetFileVersionInfoSizeW(str(path), None)
+	if not size :
+		return None
+	buf = ctypes.create_string_buffer(size)
+	if not version.GetFileVersionInfoW(str(path), 0, size, buf) :
+		return None
+	ptr = ctypes.c_void_p()
+	length = wintypes.UINT()
+	if not version.VerQueryValueW(buf, "\\", ctypes.byref(ptr), ctypes.byref(length)) :
+		return None
+	if not ptr.value :
+		return None
+	fixed = _Fixed.from_address(ptr.value)
+	ms = fixed.dwProductVersionMS or fixed.dwFileVersionMS
+	ls = fixed.dwProductVersionLS or fixed.dwFileVersionLS
+	return "%d.%d.%d.%d" % (ms >> 16, ms & 0xFFFF, ls >> 16, ls & 0xFFFF)
+
+
+def VPY_PLUGIN_INFO(core, engine : str, func : str = "FrameGen", path = None) -> dict :
+	"""读插件的标识、版本与函数签名里的参数名。
+
+	同一个插件名的不同构建接受的参数并不一样（`duplicate_threshold` 是后加的），
+	按签名过滤参数比按版本号猜可靠；版本号写进报告，方便用户报问题时对上号。
+	"""
+	info = {"namespace" : engine, "func" : func}
+	try :
+		plugin = getattr(core, engine)
+		declared = getattr(plugin, func)
+	except Exception :
+		return info
+	identifier = getattr(plugin, "identifier", None)
+	if identifier :
+		info["identifier"] = str(identifier)
+	version = getattr(plugin, "version", None)
+	if version is not None :
+		try :
+			info["version"] = "%d.%d" % (int(version.major), int(version.minor))
+		except Exception :
+			info["version"] = str(version)
+	file_version = _dll_version(path)
+	if file_version and file_version != info.get("version") :
+		info["file_version"] = file_version
+	params = []
+	for part in str(getattr(declared, "signature", "") or "").split(";") :
+		name = part.split(":", 1)[0].strip()
+		if name and name not in ("clip", "vnode") :
+			params.append(name)
+	if params :
+		info["params"] = params
+	return info
 
 
 def _framegen_call(core, engine : str, src : vs.VideoNode, args : dict) :
@@ -578,8 +655,11 @@ def FRAMEGEN_VPY(
 	if stages :
 		stages.mark("resize")
 
-	VPY_LOAD_PLUGIN(engine, script_file, _FRAMEGEN_SCRIPT_LABELS[engine]) \
-		if engine != "vaji" else _aji_load_plugin()
+	plugin_path = None
+	if engine != "vaji" :
+		plugin_path = VPY_LOAD_PLUGIN(engine, script_file, _FRAMEGEN_SCRIPT_LABELS[engine])
+	else :
+		_aji_load_plugin()
 	if stages :
 		stages.mark("load")
 
@@ -603,6 +683,12 @@ def FRAMEGEN_VPY(
 			args[key] = values[key]
 	if values["gpu"] is not None :
 		args["gpu"] = values["gpu"]
+
+	# 只传插件签名里真有的参数：老构建没有 duplicate_threshold，新构建才有
+	plugin_info = VPY_PLUGIN_INFO(core, engine, path=plugin_path) if engine != "vaji" else None
+	declared = set(plugin_info.get("params") or ()) if plugin_info else set()
+	if declared :
+		args = {key : value for key, value in args.items() if key in declared}
 
 	# 建节点包含引擎/代理初始化与首帧预热，是构图耗时的大头
 	if engine == "vaji" :
@@ -641,13 +727,13 @@ def FRAMEGEN_VPY(
 		stages.mark("fps")
 
 	if publish :
-		_publish_framegen(script_file, engine, values, fps, input, out)
+		_publish_framegen(script_file, engine, values, fps, input, out, plugin_info=plugin_info)
 	if stages :
 		stages.mark("publish")
 
 	if stages :
 		if debug :
-			_vpy_debug.dbg(_debug_config(engine, values, fps, input, out))
+			_vpy_debug.dbg(_debug_config(engine, values, fps, input, out, plugin_info))
 		# 逐帧探针：请求/就绪时间、单帧延迟、在飞帧数、线程号（见 _vpy_debug）
 		writer = None
 		if stats_on :
@@ -662,7 +748,8 @@ def FRAMEGEN_VPY(
 	return out
 
 
-def _debug_config(engine : str, values : dict, fps, video_in, out) -> str :
+def _debug_config(engine : str, values : dict, fps, video_in, out,
+		plugin_info = None) -> str :
 	"""调试模式下的一行构图摘要：实际参数 + 进出尺寸/帧率，方便和跑分表对齐。"""
 
 	params = " ".join(
@@ -671,11 +758,15 @@ def _debug_config(engine : str, values : dict, fps, video_in, out) -> str :
 	)
 	in_info = VPY_CLIP_INFO(video_in, fps = fps) or {}
 	out_info = VPY_CLIP_INFO(out) or {}
-	return (f"config {params} in={in_info.get('w')}x{in_info.get('h')}"
+	line = (f"config {params} in={in_info.get('w')}x{in_info.get('h')}"
 		f"@{in_info.get('fps')} out={out_info.get('w')}x{out_info.get('h')}"
 		f"@{out_info.get('fps')}")
+	if plugin_info and plugin_info.get("version") :
+		line += f" plugin={plugin_info['version']}"
+	return line
 
-def _publish_framegen(script_file, engine : str, values : dict, fps, video_in, out) -> None :
+def _publish_framegen(script_file, engine : str, values : dict, fps, video_in, out,
+		plugin_info = None) -> None :
 	"""按引擎拼 OSD 摘要与参数字段，写 sidecar；失败不影响播放。"""
 
 	keys = FRAMEGEN_VPY_OPTIONS[engine]
@@ -728,6 +819,7 @@ def _publish_framegen(script_file, engine : str, values : dict, fps, video_in, o
 		summary=summary,
 		in_info=VPY_CLIP_INFO(video_in, fps=fps),
 		out_info=VPY_CLIP_INFO(out),
+		**({"plugin" : plugin_info} if plugin_info else {}),
 	)
 
 def _make_stats_writer(script_file, engine : str, values : dict, fps, video_in, out, stages) :
@@ -900,6 +992,11 @@ def AJI_VPY(
 	if stages :
 		stages.mark("load")
 
+	# aji 的三个阶段各是一个函数，签名同样能读出来（模型/后端之类都由 k7 解析，不传插件）
+	plugin_info = VPY_PLUGIN_INFO(
+		core, "vsaji",
+		{"vaji_upscale" : "Upscale", "vaji_tfix" : "TemporalFix"}.get(engine, "Rife"))
+
 	# 显卡序号：面板的 auto 交给插件默认卡
 	device = values["gpu"] if values["gpu"] is not None else 0
 
@@ -923,7 +1020,7 @@ def AJI_VPY(
 		stages.mark("aji")
 
 	if publish :
-		_publish_aji(script_file, engine, values, input, out)
+		_publish_aji(script_file, engine, values, input, out, plugin_info=plugin_info)
 	if stages :
 		stages.mark("publish")
 
@@ -948,7 +1045,8 @@ def AJI_VPY(
 
 	return out
 
-def _publish_aji(script_file, engine : str, values : dict, video_in, out) -> None :
+def _publish_aji(script_file, engine : str, values : dict, video_in, out,
+		plugin_info = None) -> None :
 	"""写 sidecar：超分标倍数与模型，时序标模型与阈值（OSD 上要能一眼看出叠了哪层）。"""
 
 	backend = values.get("backend")
@@ -980,6 +1078,7 @@ def _publish_aji(script_file, engine : str, values : dict, video_in, out) -> Non
 		summary=summary,
 		in_info=VPY_CLIP_INFO(video_in),
 		out_info=VPY_CLIP_INFO(out),
+		**({"plugin" : plugin_info} if plugin_info else {}),
 	)
 
 def AJI_STACK_PUBLISH(
