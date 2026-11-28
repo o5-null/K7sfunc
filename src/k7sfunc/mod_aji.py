@@ -165,16 +165,19 @@ def RIFE_AJI(
 		raise vs.Error(f"模块 {func_name} 所请求的模型缺失: {onnx_path}")
 
 	## conf 里的 factor 只为启用 RIFE 链，真实倍率与插帧相位由 VS 侧的 factor 参数给
+	## max_fps 按这条链实际要吃到的帧率算，写死会在高帧率源上让 libaji 丢掉整段链
+	factor = fps_num // fps_den
+	max_fps = max(60, int(-(-fps_in * factor // 1)))
 	conf_body = (
 		"[global]\n"
-		"config_version=2\n"
+		"config_version=3\n"
 		"backend=TensorRT\n"
 		"logging=no\n"
 		"\n"
 		"[slot_1]\n"
 		"profile_name=k7 RIFE\n"
 		"chain_1_max_resolution=4096x2304\n"
-		"chain_1_max_fps=241\n"
+		f"chain_1_max_fps={max_fps}\n"
 		"chain_1_rife=yes\n"
 		"chain_1_rife_factor_numerator=2\n"
 		"chain_1_rife_factor_denominator=1\n"
@@ -200,7 +203,6 @@ def RIFE_AJI(
 	else :
 		cut0 = input
 
-	factor = fps_num // fps_den
 	fin = core.vsaji.Rife(cut0,
 		conf=conf_path,
 		rife_model_dir=mdl_dir,

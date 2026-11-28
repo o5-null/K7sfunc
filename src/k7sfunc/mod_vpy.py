@@ -16,6 +16,7 @@
 
 import json
 import os
+import sys
 import time
 import typing
 
@@ -55,10 +56,10 @@ STATS_INTERVAL = 0.5
 
 # 每个引擎在 vpy 里暴露哪些参数通道（决定 env / user_data 认哪些键、报告里有哪些字段）
 FRAMEGEN_VPY_OPTIONS = {
-	"vdlssg" : ("multi", "scene", "duplicate", "preset", "pre_h", "gpu", "log", "stats"),
-	"vxessfg" : ("multi", "scene", "duplicate", "pre_h", "gpu", "log", "stats"),
-	"vvfg" : ("multi", "mode", "scene", "duplicate", "pre_h", "gpu", "log", "stats"),
-	"vfsr4" : ("scene", "duplicate", "camera", "pre_h", "gpu", "log", "stats"),
+	"vdlssg" : ("multi", "scene", "duplicate", "force8bit", "preset", "pre_h", "gpu", "log", "stats"),
+	"vxessfg" : ("multi", "scene", "duplicate", "force8bit", "pre_h", "gpu", "log", "stats"),
+	"vvfg" : ("multi", "mode", "scene", "duplicate", "force8bit", "pre_h", "gpu", "log", "stats"),
+	"vfsr4" : ("scene", "duplicate", "force8bit", "camera", "pre_h", "gpu", "log", "stats"),
 	# aji 的 RIFE：没有 duplicate/camera；模型与推理后端可以现场换（重建滤镜才生效）
 	"vaji" : ("multi", "scene", "model", "ensemble", "backend", "pre_h", "gpu", "log", "stats"),
 }
@@ -102,6 +103,7 @@ _FRAMEGEN_VALUE_SPECS = {
 	"mode" : (int, 0, 2),
 	"scene" : (float, 0.0, 1.0),
 	"duplicate" : (float, 0.0, 0.05),
+	"force8bit" : (bool, None, None),
 	"camera" : (int, 0, None),
 	"pre_h" : (int, 0, None),
 	"log" : (bool, None, None),
@@ -581,6 +583,20 @@ def _framegen_call(core, engine : str, src : vs.VideoNode, args : dict) :
 		return fn(src, **rest)
 
 
+_FRAMEGEN_WARNED = set()
+
+def _warn_unsupported(engine : str, plugin_info : dict, dropped : list) -> None :
+	"""提示一次"插件不支持这个参数"：否则面板上的设置会被静默忽略。"""
+
+	tag = (engine, tuple(dropped))
+	if tag in _FRAMEGEN_WARNED :
+		return
+	_FRAMEGEN_WARNED.add(tag)
+	version = plugin_info.get("version") or "?"
+	print(f"[k7sfunc] {engine} 插件 {version} 不支持参数 {', '.join(dropped)}，已忽略",
+		  file=sys.stderr)
+
+
 def FRAMEGEN_VPY(
 	input : vs.VideoNode,
 	script_file,
@@ -592,6 +608,7 @@ def FRAMEGEN_VPY(
 	mode : int = 1,
 	scene : float = 0.12,
 	duplicate : float = 0.005,
+	force8bit : bool = False,
 	camera : int = 0,
 	preset : typing.Optional[str] = None,
 	model : typing.Optional[str] = None,
@@ -628,6 +645,7 @@ def FRAMEGEN_VPY(
 
 	values = _resolve_framegen_values(engine, user_data, {
 		"multi" : multi, "mode" : mode, "scene" : scene, "duplicate" : duplicate,
+		"force8bit" : bool(force8bit),
 		"camera" : camera,
 		"preset" : preset, "model" : model, "ensemble" : bool(ensemble),
 		"backend" : backend,
@@ -683,11 +701,19 @@ def FRAMEGEN_VPY(
 			args[key] = values[key]
 	if values["gpu"] is not None :
 		args["gpu"] = values["gpu"]
+	if values["force8bit"] :
+		args["force8bit"] = 1
 
-	# 只传插件签名里真有的参数：老构建没有 duplicate_threshold，新构建才有
+	# 只传插件签名里真有的参数：老构建没有 duplicate_threshold / force8bit，新构建才有
 	plugin_info = VPY_PLUGIN_INFO(core, engine, path=plugin_path) if engine != "vaji" else None
 	declared = set(plugin_info.get("params") or ()) if plugin_info else set()
 	if declared :
+		# 默认值不算"用户要求"：duplicate 保持 0.005、force8bit 关时静默丢弃
+		asked = [key for key in args if key not in declared and
+				 ((key == "duplicate_threshold" and values["duplicate"] != 0.005) or
+				  (key == "force8bit" and values["force8bit"]))]
+		if asked :
+			_warn_unsupported(engine, plugin_info, asked)
 		args = {key : value for key, value in args.items() if key in declared}
 
 	# 建节点包含引擎/代理初始化与首帧预热，是构图耗时的大头
@@ -799,6 +825,8 @@ def _publish_framegen(script_file, engine : str, values : dict, fps, video_in, o
 		params["preset"] = values["preset"]
 	if "camera" in keys :
 		params["camera"] = values["camera"]
+	if "force8bit" in keys :
+		params["force8bit"] = values["force8bit"]
 	if "model" in keys :
 		# sidecar 用对外键名，面板直接把它当 user_data 的键
 		params["rife_model"] = values["model"]

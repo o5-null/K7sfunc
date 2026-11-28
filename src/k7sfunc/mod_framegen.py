@@ -28,7 +28,8 @@ FRAMEGEN_ENGINES = {
 	"vfsr4" : {"name" : "FSR4", "multi" : [2]},
 	# 这里只登记倍率范围，给 mod_vpy 的参数解析用；aji 不走 FRAMEGEN_HUB
 	# （插件函数是 vsaji.Rife，宿主由 mod_aji.RIFE_AJI 负责）
-	"vaji" : {"name" : "RIFE-AJI", "multi" : [2, 3, 4, 5, 6]},
+	# vsaji 的 factor 接受 2..16，比 vs-framegen 的引擎宽
+	"vaji" : {"name" : "RIFE-AJI", "multi" : list(range(2, 17))},
 }
 
 def FRAMEGEN_HUB(
@@ -66,11 +67,15 @@ def FRAMEGEN_HUB(
 
 	yuv_in = input.format.color_family != vs.RGB
 	fmt_in = input.format.id
-	colorlv = getattr(input.get_frame(0).props, "_ColorRange", 0)
 
-	## 插件只接受 RGBS（float32 三平面），YUV 源按 709 转换
-	cut0 = core.resize.Bilinear(clip=input, format=vs.RGBS,
-								matrix_in_s="709" if yuv_in else None)
+	## 插件两种布局都吃：RGBS（float32 三平面）或平面 YUV 8..16bit。YUV 源直接进，
+	## 省掉进出两趟全分辨率转换（1080p 约 12 ms/源帧）；只有 RGB 源才提到 RGBS
+	if yuv_in :
+		cut0 = input
+	elif input.format.sample_type == vs.FLOAT and input.format.bits_per_sample == 32 :
+		cut0 = input
+	else :
+		cut0 = core.resize.Bilinear(clip=input, format=vs.RGBS)
 
 	args = {"multi" : multi, "scene_threshold" : scene_threshold, "log" : 1 if log else 0}
 	if engine_ns == "vvfg" :
@@ -83,11 +88,11 @@ def FRAMEGEN_HUB(
 		args["proxy_dir"] = proxy_dir
 	fin = getattr(core, engine_ns).FrameGen(cut0, **args)
 
-	## 回到源像素格式；插件输出恒为 full range
-	output = core.resize.Bilinear(clip=fin, format=fmt_in,
-								  matrix_s="709" if yuv_in else None,
-								  range_in_s="full" if yuv_in else None,
-								  range_s=("limited" if colorlv == 0 else "full") if yuv_in else None)
+	## 插件按输入布局回写：YUV 进 YUV 出（位深/子采样保持），RGBS 进 RGBS 出
+	if yuv_in :
+		output = fin
+	else :
+		output = core.resize.Bilinear(clip=fin, format=fmt_in)
 	## 插件保持输入 fps、帧数乘 multi，必须改回真实输出帧率，否则播放成慢动作
 	output = core.std.AssumeFPS(clip=output, fpsnum=int(round(fps_in * multi * 1e6)), fpsden=1000000)
 
