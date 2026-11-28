@@ -486,6 +486,24 @@ def _framegen_matrix_s(clip : vs.VideoNode) -> str :
 	return "709"
 
 
+def _framegen_call(core, engine : str, src : vs.VideoNode, args : dict) :
+	"""建 vs-framegen 的 FrameGen 节点。
+
+	`duplicate_threshold` 是插件后加的参数（vs-framegen 0.2.2 还没有），而 vpy
+	侧没法按版本号判断。插件不认这个参数时会在构建期直接抛错，去掉它重试一次
+	即可让新旧插件都能跑；其它错误照原样抛。
+	"""
+	fn = getattr(core, engine).FrameGen
+	try :
+		return fn(src, **args)
+	except vs.Error as exc :
+		if "duplicate_threshold" not in args or "duplicate_threshold" not in str(exc) :
+			raise
+		rest = dict(args)
+		del rest["duplicate_threshold"]
+		return fn(src, **rest)
+
+
 def FRAMEGEN_VPY(
 	input : vs.VideoNode,
 	script_file,
@@ -604,7 +622,7 @@ def FRAMEGEN_VPY(
 			backend=values["backend"],
 		)
 	else :
-		fg = getattr(core, engine).FrameGen(src, **args)
+		fg = _framegen_call(core, engine, src, args)
 	if stages :
 		stages.mark("framegen")
 
